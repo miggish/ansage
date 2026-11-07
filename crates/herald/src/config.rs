@@ -65,7 +65,7 @@ pub struct Config {
     pub listen: Vec<SocketAddr>,
     /// Graceful Restart (RFC 4724, RFC 8538): neighbors keep our routes for
     /// `restart_time` seconds when the session is lost without a Hard Reset
-    /// (`herald restart`, a crash), and we keep theirs. Off by default.
+    /// (`herald upgrade`, a crash), and we keep theirs. Off by default.
     #[serde(default)]
     pub graceful_restart: bool,
     /// Seconds a neighbor keeps our routes after losing the session, 1 to
@@ -90,12 +90,18 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Neighbor {
+    /// The neighbor's address: herald connects to it, and with `listen`
+    /// accepts connections only from configured addresses.
     pub address: IpAddr,
+    /// The neighbor's TCP port.
     #[serde(default = "default_port")]
     pub port: u16,
+    /// The neighbor's AS number; equal to `asn` makes the session iBGP.
     pub asn: u32,
     /// Overrides the global hold time for this neighbor.
     pub hold_time: Option<u16>,
+    /// Free text shown by `herald show` and in the metrics; a change needs
+    /// no reconnect.
     pub description: Option<String>,
     /// Next hop for IPv4 routes. Default: our local address of the session,
     /// if the session runs over IPv4.

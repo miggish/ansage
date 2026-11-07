@@ -292,6 +292,30 @@ scn_N16() {
     bird_established r2 srv_c || fail "srv-c's session to r2 went down"
 }
 
+scenario N22 default - "TCP MD5 with BIRD (password, as in the docs): Established; wrong key: no session"
+scn_N22() {
+    allow_flap srv-c
+    trap n_restore EXIT
+    # website/content/docs/guides/router-config.mdx shows this line.
+    bird_use r2 '/^protocol bgp srv_c/,/^}/s/passive on;/passive on;\n    password "e2e-secret";/'
+    srv_c_conf n22 r2_extra='password = "e2e-secret"'
+    srv_c_use gen-n22.toml
+    wait_until 15 bird_established r2 srv_c || fail "no session with matching MD5 keys"
+    [ "$(herald_peer srv-c 10.201.0.3 .neighbor.tcp_md5)" = true ] || fail "srv-c: tcp_md5 not shown"
+    # BIRD learned srv-c's prefixes over the signed session.
+    wait_until 10 r2_has_from_c 198.51.100.0/24 || fail "r2 has no route from srv-c"
+    wait_until 10 frr_established r1 10.201.0.10 || fail "srv-c's unsigned session to r1 is down"
+
+    # Same router, wrong key on herald's side: the kernel drops every segment.
+    srv_c_conf n22b r2_extra='password = "wrong-secret"'
+    srv_c_use gen-n22b.toml
+    sleep 12
+    running srv-c || fail "srv-c died"
+    bird_established r2 srv_c && fail "BIRD session up with a wrong MD5 key"
+    herald_established srv-c 10.201.0.3 && fail "srv-c reports a session with a wrong key"
+    frr_established r1 10.201.0.10 || fail "srv-c's session to r1 went down"
+}
+
 scenario N17 default - "GTSM (TTL security): both ends Established; herald only: no session"
 scn_N17() {
     allow_flap srv-c

@@ -241,3 +241,24 @@ scn_G7() {
     measure "back and refreshed" "$(elapsed "$start")"
     g_r1_received "$rcvd" || fail "r1's routes after the refresh: $(herald_received srv-c 10.201.0.2), before: $rcvd"
 }
+
+scenario G8 default - "BIRD with graceful restart on (as in the docs): keeps srv-c's routes through herald upgrade"
+scn_G8() {
+    allow_flap srv-c
+    trap 'srv_c_use herald.toml; bird_restore r2' EXIT
+    # G1 covers BIRD's default (aware); this is the explicit line from
+    # website/content/docs/guides/router-config.mdx.
+    bird_use r2 '/^protocol bgp srv_c/,/^}/s/passive on;/passive on;\n    graceful restart on;/'
+    g_start g8
+    [ "$(herald_peer srv-c 10.201.0.3 '.status.session.graceful_restart != null')" = true ] ||
+        fail "srv-c: no graceful restart negotiated with r2"
+    local pid out gap
+    pid=$(herald_pid srv-c)
+    g_probes_start g8
+    out=$(on srv-c herald upgrade --binary /usr/local/bin/herald 2>&1) || fail "herald upgrade failed:
+$out"
+    [ "$(herald_pid srv-c)" != "$pid" ] || fail "herald was not restarted"
+    gap=$(g_probes_gap g8)
+    assert_le "traffic gap during the upgrade" "$gap" 0.5
+    g_routes_at_both || fail "a router lost srv-c's prefixes after the upgrade"
+}
