@@ -1,0 +1,20 @@
+# srv-a: anycast server behind r1 (FRR).
+# Short timers so recovery scenarios finish in seconds.
+
+asn = 64500
+router_id = "203.0.113.21"
+hold_time = 9
+connect_retry = 1
+max_connect_retry = 8
+max_prefix_restart = 5
+
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+
+[[neighbor]]
+address = "10.201.11.2"
+asn = 64510
+description = "r1 (FRR)"
+# The session runs over IPv4; IPv4 uses the default next hop (10.201.11.10).
+next_hop_ipv6 = "2001:db8:201:11::10"
+# Keep learned routes: r1 sends our own prefix back via r2 (AS loop test).
+import = "all"

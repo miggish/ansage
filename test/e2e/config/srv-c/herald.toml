@@ -1,0 +1,25 @@
+# srv-c: unicast server on core, dual-homed to r1 and r2. Imports everything
+# but must never pass routes from one router to the other (not transit).
+
+asn = 64502
+router_id = "203.0.113.23"
+hold_time = 9
+connect_retry = 1
+max_connect_retry = 8
+max_prefix_restart = 5
+
+announce = ["198.51.100.0/24", "2001:db8:2::/48"]
+
+[[neighbor]]
+address = "10.201.0.2"
+asn = 64510
+description = "r1 (FRR)"
+next_hop_ipv6 = "2001:db8:201::10"
+import = "all"
+
+[[neighbor]]
+address = "10.201.0.3"
+asn = 64511
+description = "r2 (BIRD)"
+next_hop_ipv6 = "2001:db8:201::10"
+import = "all"

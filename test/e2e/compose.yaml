@@ -1,0 +1,191 @@
+# herald end-to-end test network.
+#
+#  user1 --[u1]-- r1 (FRR) ----[core]---- r2 (BIRD) --[u2]-- user2
+#                  |              |              |
+#                 [a]           srv-c           [b]
+#                  |                             |
+#                srv-a                         srv-b
+#
+# rogue (core, .20): scripted BGP peer (examples/rogue.rs) for M and N9.
+#
+# All networks are internal macvlan networks (Docker creates a dummy parent
+# link): no host bridge, so neither the host firewall (br_netfilter) nor
+# Docker's isolation rules touch the traffic, and the only way to 192.0.2.10
+# is via BGP. They are layer 2 only (no IPv4, null IPAM): each node sets its
+# addresses itself (ADDRS, images/init.sh), so several copies of the network
+# (one compose project each) can use the same addresses side by side. Docker
+# turns IPv6 off on interfaces of such networks; v6on turns it back on.
+# Fixed MACs (02:00:01:<net>:00:<host>): without IPAM, Docker gives a
+# restarted container a new random MAC, and neighbours keep the old one as
+# REACHABLE for 15-45 s (IPv6 to a restarted server failed, router restarts
+# took ~45 s). Real hosts keep their MAC across restarts too.
+# Documentation values only (RFC 5398 ASNs, RFC 5737 / RFC 3849 prefixes).
+
+name: herald-e2e
+
+x-node: &node
+  build:
+    context: images
+    dockerfile: Containerfile
+    target: node
+  image: herald-e2e-node
+  init: true
+  cap_add: [NET_ADMIN, NET_RAW]
+  sysctls: &node-sysctls
+    net.ipv6.conf.all.accept_dad: 0
+    net.ipv6.conf.default.accept_dad: 0
+
+x-server: &server
+  <<: *node
+  environment: &server-env
+    RUST_LOG: herald=debug
+    NO_COLOR: "1"
+    SERVICE_V4: 192.0.2.10
+    SERVICE_V6: 2001:db8:1::10
+
+x-router-sysctls: &router-sysctls
+  <<: *node-sysctls
+  net.ipv4.ip_forward: 1
+  net.ipv6.conf.all.forwarding: 1
+  net.ipv4.conf.all.rp_filter: 0
+  net.ipv4.conf.default.rp_filter: 0
+
+x-l2net: &l2net
+  driver: macvlan
+  internal: true
+  enable_ipv4: false
+  ipam:
+    driver: "null"
+
+x-v6on: &v6on
+  com.docker.network.endpoint.sysctls: net.ipv6.conf.IFNAME.disable_ipv6=0
+
+networks:
+  core: *l2net
+  u1: *l2net
+  u2: *l2net
+  a: *l2net
+  b: *l2net
+
+services:
+  r1:
+    image: quay.io/frrouting/frr:10.7.1
+    hostname: r1
+    init: false # the image runs tini itself
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    sysctls: *router-sysctls
+    volumes:
+      - ./config/r1/daemons:/etc/frr/daemons:ro
+      - ./config/r1/frr.conf:/etc/frr/frr.conf:ro
+      - ./config/r1/vtysh.conf:/etc/frr/vtysh.conf:ro
+      - ./images/init.sh:/usr/local/bin/e2e-init.sh:ro
+    environment:
+      ADDRS: core=10.201.0.2/24,2001:db8:201::2/64 u1=10.201.1.2/24,2001:db8:201:1::2/64 a=10.201.11.2/24,2001:db8:201:11::2/64
+    # Addresses first (init.sh), then the image's own start script under its tini.
+    command: ["/usr/local/bin/e2e-init.sh", "/usr/lib/frr/docker-start"]
+    networks:
+      core: { interface_name: core, mac_address: "02:00:01:00:00:02", driver_opts: *v6on }
+      u1: { interface_name: u1, mac_address: "02:00:01:01:00:02", driver_opts: *v6on }
+      a: { interface_name: a, mac_address: "02:00:01:11:00:02", driver_opts: *v6on }
+
+  r2:
+    <<: *node
+    build:
+      context: images
+      dockerfile: Containerfile
+      target: bird
+    image: herald-e2e-bird
+    hostname: r2
+    sysctls: *router-sysctls
+    environment:
+      ADDRS: core=10.201.0.3/24,2001:db8:201::3/64 u2=10.201.2.2/24,2001:db8:201:2::2/64 b=10.201.12.2/24,2001:db8:201:12::2/64
+    volumes:
+      - ./config/r2/bird.conf:/etc/bird.conf:ro
+    command: ["bird", "-f", "-c", "/etc/bird.conf", "-s", "/run/bird.ctl"]
+    networks:
+      core: { interface_name: core, mac_address: "02:00:01:00:00:03", driver_opts: *v6on }
+      u2: { interface_name: u2, mac_address: "02:00:01:02:00:02", driver_opts: *v6on }
+      b: { interface_name: b, mac_address: "02:00:01:12:00:02", driver_opts: *v6on }
+
+  srv-a:
+    <<: *server
+    hostname: srv-a
+    environment:
+      <<: *server-env
+      ADDRS: a=10.201.11.10/24,2001:db8:201:11::10/64
+      GW_V4: 10.201.11.2
+      GW_V6: 2001:db8:201:11::2
+    volumes:
+      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
+      - ./config/srv-a/herald.toml:/etc/herald.toml:ro
+    networks:
+      a: { interface_name: a, mac_address: "02:00:01:11:00:10", driver_opts: *v6on }
+
+  srv-b:
+    <<: *server
+    hostname: srv-b
+    environment:
+      <<: *server-env
+      ADDRS: b=10.201.12.10/24,2001:db8:201:12::10/64
+      GW_V4: 10.201.12.2
+      GW_V6: 2001:db8:201:12::2
+    volumes:
+      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
+      - ./config/srv-b/herald.toml:/etc/herald.toml:ro
+    networks:
+      b: { interface_name: b, mac_address: "02:00:01:12:00:10", driver_opts: *v6on }
+
+  srv-c:
+    <<: *server
+    hostname: srv-c
+    environment:
+      RUST_LOG: herald=debug
+      NO_COLOR: "1"
+      SERVICE_V4: 198.51.100.10
+      SERVICE_V6: 2001:db8:2::10
+      ADDRS: core=10.201.0.10/24,2001:db8:201::10/64
+      GW_V4: 10.201.0.2
+      GW_V6: 2001:db8:201::2
+      HERALD_USER: ${SRV_C_USER:-}
+      HERALD_SUPERVISED: ${SRV_C_SUPERVISED:-}
+      HERALD_CRASH_TEST: ${SRV_C_CRASH_TEST:-}
+      HERALD_STAY: ${SRV_C_STAY:-}
+    volumes:
+      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
+      - ./config/srv-c/${SRV_C_CONFIG:-herald.toml}:/etc/herald.toml:ro
+    networks:
+      # Fixed MAC: stable link-local address fe80::ff:feff:10 for N5.
+      core: { interface_name: core, mac_address: "02:00:00:ff:00:10", driver_opts: *v6on }
+
+  # Scripted BGP peer (examples/rogue.rs) for the M scenarios and N9; idle
+  # until a scenario runs a script. srv-c peers with it only in variants.
+  rogue:
+    <<: *node
+    hostname: rogue
+    environment:
+      ADDRS: core=10.201.0.20/24,2001:db8:201::20/64
+    volumes:
+      - ../../target/x86_64-unknown-linux-musl/release/examples/rogue:/usr/local/bin/rogue:ro
+      - ../fuzz:/fuzz:ro
+    networks:
+      core: { interface_name: core, mac_address: "02:00:01:00:00:20", driver_opts: *v6on }
+
+  user1:
+    <<: *node
+    hostname: user1
+    environment:
+      ADDRS: u1=10.201.1.10/24,2001:db8:201:1::10/64
+      GW_V4: 10.201.1.2
+      GW_V6: 2001:db8:201:1::2
+    networks:
+      u1: { interface_name: u1, mac_address: "02:00:01:01:00:10", driver_opts: *v6on }
+
+  user2:
+    <<: *node
+    hostname: user2
+    environment:
+      ADDRS: u2=10.201.2.10/24,2001:db8:201:2::10/64
+      GW_V4: 10.201.2.2
+      GW_V6: 2001:db8:201:2::2
+    networks:
+      u2: { interface_name: u2, mac_address: "02:00:01:02:00:10", driver_opts: *v6on }

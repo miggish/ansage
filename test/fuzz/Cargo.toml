@@ -1,0 +1,32 @@
+[package]
+name = "herald-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = "1.12"
+libfuzzer-sys = "0.4"
+herald-bgp = { path = "../../crates/herald-bgp" }
+herald-netlink = { path = "../../crates/herald-netlink" }
+
+# Keep the fuzz crate out of any parent workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "netlink"
+path = "fuzz_targets/netlink.rs"
+test = false
+doc = false
+bench = false

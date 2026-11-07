@@ -1,0 +1,63 @@
+# Push a tag vX.Y.Z (matching Cargo.toml's version) to publish a release with
+# static binaries, the unit and the installer:
+#   curl -fsSL https://github.com/miggish/herald/releases/latest/download/install.sh | sudo sh
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+      - name: Toolchain
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq musl-tools
+          rustup toolchain install stable --profile minimal --target ${{ matrix.arch }}-unknown-linux-musl
+      - name: Test
+        run: cargo test --release --locked
+      - name: Build
+        run: |
+          cargo build --release --locked --bin herald --target ${{ matrix.arch }}-unknown-linux-musl
+          cp target/${{ matrix.arch }}-unknown-linux-musl/release/herald herald-${{ matrix.arch }}-linux-musl
+          ./herald-${{ matrix.arch }}-linux-musl --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herald-${{ matrix.arch }}
+          path: herald-${{ matrix.arch }}-linux-musl
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Assets
+        run: |
+          cp dist/install.sh dist/herald.service out/
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "herald $GITHUB_REF_NAME" --generate-notes out/*

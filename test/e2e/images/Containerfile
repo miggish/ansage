@@ -1,0 +1,10 @@
+# e2e images. `node`: herald servers and users (herald itself is mounted
+# from the host build). `bird`: router r2.
+FROM docker.io/library/alpine:3.22 AS node
+RUN apk add --no-cache iproute2 iproute2-tc nftables curl busybox-extras
+COPY init.sh /usr/local/bin/init.sh
+ENTRYPOINT ["/usr/local/bin/init.sh"]
+
+FROM node AS bird
+RUN apk add --no-cache bird
+CMD ["bird", "-f", "-c", "/etc/bird.conf", "-s", "/run/bird.ctl"]

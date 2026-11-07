@@ -1,0 +1,4 @@
+out/
+# Generated srv-c config variants (scenarios write them).
+config/srv-c/gen-*.toml
+config/srv-c/gen/

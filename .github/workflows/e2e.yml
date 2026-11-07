@@ -1,0 +1,62 @@
+# End-to-end tests (test/e2e) on every pull request: herald against FRR and
+# BIRD in containers, with real traffic. Manual runs can pick the full tier
+# or single scenarios.
+name: e2e
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "default, or full (also the slow scenarios)"
+        type: choice
+        options: [default, full]
+        default: default
+      scenarios:
+        description: "Scenarios or groups, e.g. `F4 R` (empty: the whole tier)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# A new push to the same pull request cancels the run before it.
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      E2E_ENGINE: docker
+      E2E_JOBS: 4
+      E2E_TIER: ${{ inputs.tier || 'default' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq musl-tools just
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl
+      - name: Docker versions
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          docker compose version
+      - name: Start the network
+        run: just e2e-up
+      - name: Run the scenarios
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: test/e2e/run.sh $SCENARIOS
+      - name: Keep the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: test/e2e/out/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Stop the network
+        if: always()
+        run: just e2e-down

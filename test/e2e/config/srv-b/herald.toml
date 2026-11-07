@@ -1,0 +1,19 @@
+# srv-b: anycast server behind r2 (BIRD). Default import "none" (RFC 8212).
+
+asn = 64500
+router_id = "203.0.113.22"
+hold_time = 9
+connect_retry = 1
+max_connect_retry = 8
+max_prefix_restart = 5
+
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+
+[[neighbor]]
+address = "10.201.12.2"
+asn = 64511
+description = "r2 (BIRD)"
+next_hop_ipv6 = "2001:db8:201:12::10"
+# BIRD ignores GRACEFUL_SHUTDOWN without a filter: while drained (O11),
+# two extra prepends make r2 prefer srv-a's path via r1.
+drain_prepend = 2
