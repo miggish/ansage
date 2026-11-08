@@ -4,9 +4,9 @@
 #![no_main]
 
 use bytes::BytesMut;
-use herald_bgp::wire::Message;
-use herald_bgp::wire::Negotiated;
-use herald_bgp::wire::split_message;
+use ansage_bgp::wire::Message;
+use ansage_bgp::wire::Negotiated;
+use ansage_bgp::wire::split_message;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

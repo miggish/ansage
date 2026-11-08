@@ -3,11 +3,11 @@
 
 #![no_main]
 
-use herald_netlink::Batch;
+use ansage_netlink::Batch;
 
-use herald_netlink::Body;
+use ansage_netlink::Body;
 
-use herald_netlink::parse;
+use ansage_netlink::parse;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

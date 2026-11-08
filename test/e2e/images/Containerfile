@@ -1,4 +1,4 @@
-# e2e images. `node`: herald servers and users (herald itself is mounted
+# e2e images. `node`: ansage servers and users (ansage itself is mounted
 # from the host build). `bird`: router r2.
 FROM docker.io/library/alpine:3.22 AS node
 RUN apk add --no-cache iproute2 iproute2-tc nftables curl busybox-extras

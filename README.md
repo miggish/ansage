@@ -1,4 +1,4 @@
-# herald
+# ansage
 
 BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
 range) to one or more routers. It never re-exports routes; with `[kernel]` it
@@ -7,7 +7,7 @@ installs the best routes it learns into the Linux routing table.
 ## Running
 
 ```
-herald --config /etc/herald/herald.toml [--log-format text|json]
+ansage --config /etc/ansage/ansage.toml [--log-format text|json]
 ```
 
 A minimal config:
@@ -22,7 +22,7 @@ address = "10.0.0.1"
 asn = 64501
 ```
 
-The doc comments in `crates/herald/src/config.rs` describe every setting. Some of them:
+The doc comments in `crates/ansage/src/config.rs` describe every setting. Some of them:
 
 | setting | where | meaning |
 |---|---|---|
@@ -30,30 +30,30 @@ The doc comments in `crates/herald/src/config.rs` describe every setting. Some o
 | `ttl_security = 1` | neighbor | GTSM (RFC 5082): the neighbor is at most this many hops away |
 | `listen = ["0.0.0.0:179", "[::]:179"]` | global | accept connections from configured neighbors (needs CAP_NET_BIND_SERVICE for 179) |
 | `passive = true` | neighbor | never connect, wait for the neighbor (needs `listen`) |
-| `metrics_listen = "127.0.0.1:9179"` | global | Prometheus metrics at `/metrics`; read-only JSON at `/api/summary`, `/api/peers` (`?peer=`), `/api/rib` (`?prefix=` or `?family=ipv4&limit=N`), `/api/fib`: the same as `herald show ... --json`, for a dashboard; live updates at `/api/events` (Server-Sent Events: `summary` at once and every 5 s, `peer` on every session change). It includes session details and routes, so bind it to an address only trusted hosts reach. |
+| `metrics_listen = "127.0.0.1:9179"` | global | Prometheus metrics at `/metrics`; read-only JSON at `/api/summary`, `/api/peers` (`?peer=`), `/api/rib` (`?prefix=` or `?family=ipv4&limit=N`), `/api/fib`: the same as `ansage show ... --json`, for a dashboard; live updates at `/api/events` (Server-Sent Events: `summary` at once and every 5 s, `peer` on every session change). It includes session details and routes, so bind it to an address only trusted hosts reach. |
 | `drain_time = 30` | global | on SIGTERM/SIGINT, drain this many seconds before closing the sessions (default 0) |
 | `drain_prepend = 2` | neighbor | while drained, prepend our AS this many extra times (eBGP; for neighbors that ignore GRACEFUL_SHUTDOWN) |
-| `control_socket` | global | unix socket for the CLI, default `/run/herald/herald.sock` (empty: off) |
+| `control_socket` | global | unix socket for the CLI, default `/run/ansage/ansage.sock` (empty: off) |
 | `[kernel]` | section | install learned best routes into the kernel: `table` (254), `metric` (20), `families` (both), `resolve_via_default` (false) |
 | `install = false` | neighbor | keep this neighbor's routes out of the kernel (default true with `[kernel]`) |
 
 ### Operating it
 
 ```
-herald show summary | peers | peer NEIGHBOR | rib [PREFIX]
-herald announce PREFIX...        # at runtime, until restart
-herald withdraw PREFIX...
-herald peer NEIGHBOR disable [--reason TEXT] | enable | reset
-herald drain [--wait SECONDS]    # move traffic away, sessions stay up
-herald undrain
-herald reload                    # or SIGHUP / systemctl reload herald
+ansage show summary | peers | peer NEIGHBOR | rib [PREFIX]
+ansage announce PREFIX...        # at runtime, until restart
+ansage withdraw PREFIX...
+ansage peer NEIGHBOR disable [--reason TEXT] | enable | reset
+ansage drain [--wait SECONDS]    # move traffic away, sessions stay up
+ansage undrain
+ansage reload                    # or SIGHUP / systemctl reload ansage
 ```
 
 All client commands take `--json` and `-s SOCKET` (or `-c CONFIG` to find its
 socket).
 
-- **Health checks** live outside herald: a script or timer that calls
-  `herald withdraw` when the service fails and `herald announce` when it is back
+- **Health checks** live outside ansage: a script or timer that calls
+  `ansage withdraw` when the service fails and `ansage announce` when it is back
   (with its own rise/fall counts against flapping).
 - **Drain** (RFC 8326) takes a server out of an anycast set without a hard
   withdraw: our routes go out again with the GRACEFUL_SHUTDOWN community
@@ -61,9 +61,9 @@ socket).
   routers move traffic to the other sites while this one still answers. FRR
   lowers such routes to LOCAL_PREF 0 by itself; BIRD needs a filter
   (`if (65535, 0) ~ bgp_community then bgp_local_pref = 0;`) or
-  `drain_prepend`. `herald drain --wait 30 && systemctl stop herald` drains for
+  `drain_prepend`. `ansage drain --wait 30 && systemctl stop ansage` drains for
   30 s, then withdraws; `drain_time` does the same on every stop (a second
-  SIGTERM ends the wait). The drain lasts until `herald undrain`, survives a
+  SIGTERM ends the wait). The drain lasts until `ansage undrain`, survives a
   reload and ends with a restart or upgrade.
 - **Reload** re-reads the file and applies only what changed: added
   neighbors connect, removed ones get Cease 6/3, changed ones reconnect with
@@ -88,19 +88,19 @@ that moves is one change, not one per route. Linux 5.3 or newer.
   latter). An IPv6 link-local next hop (RFC 2545) from a neighbor on a
   shared link goes out of the session's interface: used when the neighbor
   sends only a link-local next hop, and when its global one does not
-  resolve. herald watches interfaces, addresses and routes: when a next hop
+  resolve. ansage watches interfaces, addresses and routes: when a next hop
   becomes unreachable its routes leave the kernel at once and the next best
   path takes over; what the kernel refuses is tried again every 30 s.
 - Our own prefixes (`announce`, also after a runtime withdraw) never go in.
-- `herald show fib` lists the counts and every next hop (reachable through
-  which gateway and interface, or not); `herald show rib ADDRESS` shows the
+- `ansage show fib` lists the counts and every next hop (reachable through
+  which gateway and interface, or not); `ansage show rib ADDRESS` shows the
   longest matching prefix and whether it is in the kernel. Metrics:
-  `herald_fib_routes`, `herald_fib_next_hops`, `herald_fib_errors_total`,
-  `herald_fib_adopted_routes`.
-- `herald` needs CAP_NET_ADMIN and netlink: the installer enables them in the
-  unit when the config has `[kernel]`; otherwise herald refuses to start and
+  `ansage_fib_routes`, `ansage_fib_next_hops`, `ansage_fib_errors_total`,
+  `ansage_fib_adopted_routes`.
+- `ansage` needs CAP_NET_ADMIN and netlink: the installer enables them in the
+  unit when the config has `[kernel]`; otherwise ansage refuses to start and
   says what is missing.
-- A stop removes herald's routes. `herald upgrade` and a crash leave them:
+- A stop removes ansage's routes. `ansage upgrade` and a crash leave them:
   the next start keeps them forwarding, replaces each as its neighbor sends
   it again, and removes the rest once every installing neighbor has sent
   End-of-RIB (at most 6 minutes). A reload moves the routes to a new `table`
@@ -109,60 +109,60 @@ that moves is one change, not one per route. Linux 5.3 or newer.
 ### Upgrades without dropping routes (graceful restart)
 
 With `graceful_restart = true` (off by default; `restart_time`, default 30 s,
-also per neighbor), herald and its neighbors use Graceful Restart (RFC 4724)
-with the N bit (RFC 8538). How herald goes away then decides what the
+also per neighbor), ansage and its neighbors use Graceful Restart (RFC 4724)
+with the N bit (RFC 8538). How ansage goes away then decides what the
 neighbors do with our routes:
 
-| Event | herald sends | Neighbors |
+| Event | ansage sends | Neighbors |
 |---|---|---|
-| `herald upgrade` | Cease 6/2 "herald restarting" (N bit) or nothing | keep our routes as stale, then refresh them |
+| `ansage upgrade` | Cease 6/2 "ansage restarting" (N bit) or nothing | keep our routes as stale, then refresh them |
 | `systemctl stop` / SIGTERM, `peer disable` | Hard Reset (N bit) or Cease (after `drain_time`) | withdraw at once |
-| herald panics | Hard Reset / Cease from the panic hook | withdraw at once |
+| ansage panics | Hard Reset / Cease from the panic hook | withdraw at once |
 | kill -9, OOM kill | nothing | keep the routes for `restart_time` |
 
 Deploying a new binary:
 
 ```sh
-herald upgrade --dry-run                  # per neighbor: keeps or withdraws our routes
-install -m 0755 herald /usr/local/bin/herald.new
-mv -f /usr/local/bin/herald.new /usr/local/bin/herald   # atomic; the running one is unaffected
-herald upgrade --binary /usr/local/bin/herald || rollback
+ansage upgrade --dry-run                  # per neighbor: keeps or withdraws our routes
+install -m 0755 ansage /usr/local/bin/ansage.new
+mv -f /usr/local/bin/ansage.new /usr/local/bin/ansage   # atomic; the running one is unaffected
+ansage upgrade --binary /usr/local/bin/ansage || rollback
 ```
 
-`herald upgrade` checks the binary
+`ansage upgrade` checks the binary
 (`--version`, `check` against the running config) before anything happens.
 It refuses if an Established neighbor has no graceful restart (it would
-withdraw) or if nothing would start herald again (not under systemd), unless
-`--force`. Then it exits herald with status 75, which the unit restarts at
+withdraw) or if nothing would start ansage again (not under systemd), unless
+`--force`. Then it exits ansage with status 75, which the unit restarts at
 once, and waits until every neighbor is back with our full table. Exit 0 only
-then, so a deploy script can roll back. `herald check -c FILE` validates a
+then, so a deploy script can roll back. `ansage check -c FILE` validates a
 config on its own.
 
 ### Installing (systemd)
 
 ```sh
-curl -fsSL https://github.com/miggish/herald/releases/latest/download/install.sh \
-  | sudo sh -s -- --config ./herald.toml --operator "$USER"
+curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh \
+  | sudo sh -s -- --config ./ansage.toml --operator "$USER"
 ```
 
 The installer downloads the static binary for the machine (x86_64 or aarch64,
-checked against `SHA256SUMS`), creates the system user and group `herald`,
-and installs `/usr/local/bin/herald`, `/etc/herald` (root:herald, files 0640:
-they may hold TCP-MD5 keys) and `dist/herald.service`. Then it enables the
+checked against `SHA256SUMS`), creates the system user and group `ansage`,
+and installs `/usr/local/bin/ansage`, `/etc/ansage` (root:ansage, files 0640:
+they may hold TCP-MD5 keys) and `dist/ansage.service`. Then it enables the
 service and starts it once a config exists. `--operator USER` adds USER to
-group `herald`, which may use the control socket (`herald show`, ...).
+group `ansage`, which may use the control socket (`ansage show`, ...).
 
 Running it again is safe: only changed files are replaced (the old ones are
 kept as `.bak.<time>`), and a new config is checked with the new binary and
-applied with a reload. A running herald keeps the old binary until
-`herald upgrade`, or until you pass `--restart`, which runs it for you.
-`HERALD_VERSION=v0.1.0` pins a release and `HERALD_BASE_URL` downloads from
+applied with a reload. A running ansage keeps the old binary until
+`ansage upgrade`, or until you pass `--restart`, which runs it for you.
+`ANSAGE_VERSION=v0.1.0` pins a release and `ANSAGE_BASE_URL` downloads from
 another server. `--binary PATH` installs a local build instead. Releases
 come from `.github/workflows/release.yml` on a `vX.Y.Z` tag.
 `just install-test` runs the installer against systemd 252 and 255 in
 (unprivileged) containers.
 
-`dist/herald.service` runs herald as user `herald` with `Type=notify-reload`
+`dist/ansage.service` runs ansage as user `ansage` with `Type=notify-reload`
 (readiness and reloads are reported to systemd; the installer switches to
 `Type=notify` before systemd 253) and a hardened sandbox.
 
@@ -170,16 +170,16 @@ come from `.github/workflows/release.yml` on a `vX.Y.Z` tag.
 
 | crate | what |
 |---|---|
-| `crates/herald` | the daemon and its CLI (not published) |
-| `crates/herald-bgp` | BGP-4 messages and the session state machine, without I/O |
-| `crates/herald-netlink` | Linux rtnetlink messages for routes, nexthops, links and addresses |
+| `crates/ansage` | the daemon and its CLI (not published) |
+| `crates/ansage-bgp` | BGP-4 messages and the session state machine, without I/O |
+| `crates/ansage-netlink` | Linux rtnetlink messages for routes, nexthops, links and addresses |
 
 ## End-to-end tests
 
-`test/e2e/` holds a container network in which herald announces anycast
+`test/e2e/` holds a container network in which ansage announces anycast
 prefixes to real routers (FRR and BIRD), and test users send real traffic
 (HTTP, ping, traceroute) through them. Scenarios assert on traffic and paths, on the
-routers' view and on herald's own view (its control socket).
+routers' view and on ansage's own view (its control socket).
 
 ```
  user1 --[u1]-- r1 (FRR) ----[core]---- r2 (BIRD) --[u2]-- user2
@@ -196,7 +196,7 @@ are internal macvlan networks on a Docker dummy link, so nothing reaches the
 host's LAN.
 
 ```sh
-just e2e-up          # build herald + the rogue peer, start the copies
+just e2e-up          # build ansage + the rogue peer, start the copies
 just e2e             # default tier
 just e2e-full        # everything (~5.5 min on 4 copies)
 just e2e F4 R        # single scenarios or groups

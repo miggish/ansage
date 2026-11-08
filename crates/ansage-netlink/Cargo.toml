@@ -1,0 +1,19 @@
+[package]
+name = "ansage-netlink"
+description = "Linux rtnetlink (NETLINK_ROUTE) messages for routes, nexthops, links and addresses"
+readme = "README.md"
+keywords = ["netlink", "rtnetlink", "routing", "linux"]
+categories = ["network-programming", "os::linux-apis"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ansage-bgp.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+clap.workspace = true

@@ -1,6 +1,6 @@
 # B: baseline and steady state.
 
-scenario B1 default - "baseline routing: user1 <-> user2 without herald"
+scenario B1 default - "baseline routing: user1 <-> user2 without ansage"
 scn_B1() {
     ping_ok user1 10.201.2.10 || fail "user1 cannot ping user2 (IPv4)"
     ping_ok user1 2001:db8:201:2::10 || fail "user1 cannot ping user2 (IPv6)"
@@ -132,7 +132,7 @@ scn_B5() {
 $caps"
         done
         for c in 'Graceful restart' 'Long-lived' 'Enhanced refresh' 'ADD-PATH'; do
-            if grep -q "$c" <<<"$caps"; then fail "r2 $n: herald should not announce '$c'"; fi
+            if grep -q "$c" <<<"$caps"; then fail "r2 $n: ansage should not announce '$c'"; fi
         done
         bird r2 show protocols all "$n" | grep -E 'Hold timer: +[0-9.]+/9$' >/dev/null || fail "r2 $n: hold time not 9 s"
     done
@@ -186,7 +186,7 @@ scn_B7() {
     wait_log srv-a "$since" 'session established .*hold_time=6' 20
     wait_until 10 frr_established r1 10.201.11.10
     [ "$(frr_neighbor r1 10.201.11.10 .bgpTimerHoldTimeMsecs)" = 6000 ] || fail "r1: hold time not 6 s with 6 proposed"
-    # herald must send keepalives every 2 s now: the session survives 3 hold times.
+    # ansage must send keepalives every 2 s now: the session survives 3 hold times.
     dropped=$(frr_neighbor r1 10.201.11.10 .connectionsDropped)
     since=$(now)
     sleep 18
@@ -202,7 +202,7 @@ scn_B8() {
 }
 
 # Routes FRR router R1 sends to NEIGHBOR for AFI (ipv4/ipv6) whose path has
-# none of ASN (herald drops those as AS loops): the count herald must store.
+# none of ASN (ansage drops those as AS loops): the count ansage must store.
 frr_sent_without_loop() {
     frr "$1" "show bgp $3 unicast neighbors $2 advertised-routes json" |
         jq --arg asn "$4" '[.advertisedRoutes[] | select(.path | split(" ") | index($asn) | not)] | length'
@@ -213,51 +213,51 @@ bird_route_counts() {
     bird "$1" show protocols all "$2" | awk '/Routes:/ { i[++n] = $2; e[n] = $4 } END { print i[1], i[2], e[1], e[2] }'
 }
 
-scenario B9 default - "herald's own view (control socket): sessions and counts agree with the routers"
+scenario B9 default - "ansage's own view (control socket): sessions and counts agree with the routers"
 scn_B9() {
     local s mode
     for s in "${SERVERS[@]}"; do
-        mode=$(on "$s" stat -c %A /run/herald/herald.sock) || fail "$s: no control socket"
+        mode=$(on "$s" stat -c %A /run/ansage/ansage.sock) || fail "$s: no control socket"
         [ "$mode" = srwxrwx--- ] || [ "$mode" = srw-rw---- ] || fail "$s: socket mode $mode"
         # The text output works too.
-        on "$s" herald show summary | grep -E '^1 +.* Established ' >/dev/null ||
+        on "$s" ansage show summary | grep -E '^1 +.* Established ' >/dev/null ||
             fail "$s: summary shows no Established neighbor:
-$(on "$s" herald show summary)"
+$(on "$s" ansage show summary)"
     done
 
-    # What herald says it sent = what the routers got; what it stored = what
+    # What ansage says it sent = what the routers got; what it stored = what
     # they sent (minus AS loops; srv-b imports nothing).
     local server peer local_addr asn adv recv sent4 sent6 counts
     for s in "srv-a 10.201.11.2 10.201.11.10 64500" "srv-c 10.201.0.2 10.201.0.10 64502"; do
         read -r server peer local_addr asn <<<"$s"
-        adv=$(herald_peer "$server" "$peer" '.rib | "\(.advertised_ipv4) \(.advertised_ipv6)"')
+        adv=$(ansage_peer "$server" "$peer" '.rib | "\(.advertised_ipv4) \(.advertised_ipv6)"')
         counts=$(frr r1 "show bgp summary json" |
             jq -r --arg n "$local_addr" '"\(.ipv4Unicast.peers[$n].pfxRcd) \(.ipv6Unicast.peers[$n].pfxRcd)"')
-        [ "$adv" = "$counts" ] || fail "$server -> r1: herald advertised $adv, r1 received $counts"
+        [ "$adv" = "$counts" ] || fail "$server -> r1: ansage advertised $adv, r1 received $counts"
         sent4=$(frr_sent_without_loop r1 "$local_addr" ipv4 "$asn")
         sent6=$(frr_sent_without_loop r1 "$local_addr" ipv6 "$asn")
-        recv=$(herald_received "$server" "$peer")
-        [ "$recv" = "$sent4 $sent6" ] || fail "r1 -> $server: herald stored $recv, r1 sent $sent4 $sent6 (without AS loops)"
+        recv=$(ansage_received "$server" "$peer")
+        [ "$recv" = "$sent4 $sent6" ] || fail "r1 -> $server: ansage stored $recv, r1 sent $sent4 $sent6 (without AS loops)"
     done
     local i4 i6 e4 e6
     for s in "srv-b 10.201.12.2 srv_b" "srv-c 10.201.0.3 srv_c"; do
         read -r server peer local_addr <<<"$s"
         read -r i4 i6 e4 e6 <<<"$(bird_route_counts r2 "$local_addr")"
-        adv=$(herald_peer "$server" "$peer" '.rib | "\(.advertised_ipv4) \(.advertised_ipv6)"')
-        [ "$adv" = "$i4 $i6" ] || fail "$server -> r2: herald advertised $adv, r2 imported $i4 $i6"
-        recv=$(herald_received "$server" "$peer")
+        adv=$(ansage_peer "$server" "$peer" '.rib | "\(.advertised_ipv4) \(.advertised_ipv6)"')
+        [ "$adv" = "$i4 $i6" ] || fail "$server -> r2: ansage advertised $adv, r2 imported $i4 $i6"
+        recv=$(ansage_received "$server" "$peer")
         if [ "$server" = srv-b ]; then
             [ "$recv" = "0 0" ] || fail "srv-b imports nothing, but stored $recv"
         else
-            [ "$recv" = "$e4 $e6" ] || fail "r2 -> $server: herald stored $recv, r2 exported $e4 $e6"
+            [ "$recv" = "$e4 $e6" ] || fail "r2 -> $server: ansage stored $recv, r2 exported $e4 $e6"
         fi
     done
 
     # Counters of a healthy session.
     local c
-    for s in "${HERALD_SESSIONS[@]}"; do
+    for s in "${ANSAGE_SESSIONS[@]}"; do
         read -r server peer <<<"$s"
-        c=$(herald_peer "$server" "$peer" .counters)
+        c=$(ansage_peer "$server" "$peer" .counters)
         jq -e '.messages_in.keepalive > 0 and .messages_out.keepalive > 0 and .messages_out.update > 0
             and .prefixes_announced > 0 and .decode_errors == 0 and .malformed_updates == 0
             and .control_drops == 0 and .data_drops == 0' <<<"$c" >/dev/null ||

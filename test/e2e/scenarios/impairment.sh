@@ -52,7 +52,7 @@ scn_I2() {
     since=$(now)
     sleep 30
     measure "flaps in 30 s at 30 % loss" "$(($(frr_neighbor r1 10.201.11.10 .connectionsDropped) - dropped))" flaps
-    measure "srv-a session down lines at 30 % loss" "$(herald_logs srv-a "$since" | grep -c 'session down' || true)" lines
+    measure "srv-a session down lines at 30 % loss" "$(ansage_logs srv-a "$since" | grep -c 'session down' || true)" lines
 }
 
 scenario I3 full - "reorder 25 % + duplicate 5 %: stable, no decode errors"

@@ -12,6 +12,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "ansage"
+version = "0.1.0"
+dependencies = [
+ "ansage-bgp",
+ "ansage-netlink",
+ "bytes",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ansage-bgp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "ansage-netlink"
+version = "0.1.0"
+dependencies = [
+ "ansage-bgp",
+ "clap",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -152,45 +191,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "herald"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "clap",
- "herald-bgp",
- "herald-netlink",
- "libc",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "herald-bgp"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "clap",
- "serde",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "herald-netlink"
-version = "0.1.0"
-dependencies = [
- "clap",
- "herald-bgp",
- "libc",
- "thiserror",
-]
 
 [[package]]
 name = "indexmap"

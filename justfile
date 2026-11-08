@@ -10,31 +10,31 @@ watch:
 # --- Lab: BIRD 3 in Docker, host network, listening on 127.0.0.2:179 ---
 
 lab-up:
-    docker build -q -t herald-lab-bird -f test/lab/Containerfile test/lab
-    -docker rm -f herald-lab-bird >/dev/null 2>&1
-    docker run -d --name herald-lab-bird --network host -v {{justfile_directory()}}/test/lab/bird.conf:/etc/bird.conf:ro herald-lab-bird
+    docker build -q -t ansage-lab-bird -f test/lab/Containerfile test/lab
+    -docker rm -f ansage-lab-bird >/dev/null 2>&1
+    docker run -d --name ansage-lab-bird --network host -v {{justfile_directory()}}/test/lab/bird.conf:/etc/bird.conf:ro ansage-lab-bird
 
 lab-down:
-    docker rm -f herald-lab-bird
+    docker rm -f ansage-lab-bird
 
 lab-logs:
-    docker logs -f herald-lab-bird
+    docker logs -f ansage-lab-bird
 
 birdc *args:
-    docker exec herald-lab-bird birdc -s /run/bird.ctl {{args}}
+    docker exec ansage-lab-bird birdc -s /run/bird.ctl {{args}}
 
-# BIRD asks herald to resend its routes (ROUTE-REFRESH).
+# BIRD asks ansage to resend its routes (ROUTE-REFRESH).
 lab-refresh:
-    docker exec herald-lab-bird birdc -s /run/bird.ctl reload bgp in herald
+    docker exec ansage-lab-bird birdc -s /run/bird.ctl reload bgp in ansage
 
 lab-run:
-    RUST_LOG=herald=debug cargo run -- --config test/lab/herald.toml
+    RUST_LOG=ansage=debug cargo run -- --config test/lab/ansage.toml
 
-# Asks the lab herald (`just lab-run`), e.g. `just lab-show summary`, `just lab-show rib --json`.
+# Asks the lab ansage (`just lab-run`), e.g. `just lab-show summary`, `just lab-show rib --json`.
 lab-show *args:
-    cargo run -q -- --config test/lab/herald.toml show {{args}}
+    cargo run -q -- --config test/lab/ansage.toml show {{args}}
 
-# --- netlink: herald's netlink code against the real kernel ---
+# --- netlink: ansage's netlink code against the real kernel ---
 
 # Installs, moves and removes routes in a throwaway user + network namespace
 # (no root needed, the host's routing table is not touched).
@@ -46,33 +46,33 @@ netlink-demo:
 netlink *args:
     cargo run -q --example netlink -- {{args}}
 
-# --- e2e: herald + FRR + BIRD in containers ---
+# --- e2e: ansage + FRR + BIRD in containers ---
 # Docker only (E2E_ENGINE, default docker): podman puts a macvlan network
 # without a parent on the host's default interface, i.e. on the real LAN.
 
 e2e_engine := env_var_or_default("E2E_ENGINE", "docker")
 e2e_file := justfile_directory() / "test/e2e/compose.yaml"
-# Copies of the network (compose projects herald-e2e-1..N, same addresses);
+# Copies of the network (compose projects ansage-e2e-1..N, same addresses);
 # run.sh spreads the scenarios over them.
 e2e_jobs := env_var_or_default("E2E_JOBS", "4")
 # Copy for e2e-sh / e2e-logs.
-e2e_project := env_var_or_default("E2E_PROJECT", "herald-e2e-1")
+e2e_project := env_var_or_default("E2E_PROJECT", "ansage-e2e-1")
 
 # Refuses podman, also behind a `docker` wrapper.
 e2e-engine:
     @if {{e2e_engine}} --version 2>/dev/null | grep -qi podman; then echo "e2e: {{e2e_engine}} is podman; the e2e network needs Docker (macvlan would land on the LAN)" >&2; exit 2; fi
 
 e2e-build:
-    cargo build --release --target x86_64-unknown-linux-musl --bin herald --example rogue
+    cargo build --release --target x86_64-unknown-linux-musl --bin ansage --example rogue
 
 # Builds the images once, then starts E2E_JOBS copies.
 e2e-up: e2e-engine e2e-build
-    {{e2e_engine}} compose -p herald-e2e-1 -f {{e2e_file}} build -q
-    for k in $(seq {{e2e_jobs}}); do {{e2e_engine}} compose -p herald-e2e-$k -f {{e2e_file}} up -d --quiet-pull; done
+    {{e2e_engine}} compose -p ansage-e2e-1 -f {{e2e_file}} build -q
+    for k in $(seq {{e2e_jobs}}); do {{e2e_engine}} compose -p ansage-e2e-$k -f {{e2e_file}} up -d --quiet-pull; done
 
 # Stops every copy (also ones from a run with more copies).
 e2e-down:
-    for p in $({{e2e_engine}} compose ls -a -q | grep -E '^herald-e2e(-[0-9]+)?$'); do {{e2e_engine}} compose -p $p -f {{e2e_file}} down -t 2; done
+    for p in $({{e2e_engine}} compose ls -a -q | grep -E '^ansage-e2e(-[0-9]+)?$'); do {{e2e_engine}} compose -p $p -f {{e2e_file}} down -t 2; done
 
 e2e-sh name:
     {{e2e_engine}} compose -p {{e2e_project}} -f {{e2e_file}} exec {{name}} sh

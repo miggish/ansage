@@ -1,39 +1,39 @@
 #!/bin/sh
-# herald installer: installs or updates herald as a systemd service.
+# ansage installer: installs or updates ansage as a systemd service.
 #
-#   curl -fsSL https://github.com/miggish/herald/releases/latest/download/install.sh | sudo sh
-#   curl -fsSL .../install.sh | sudo sh -s -- --operator "$USER" --config ./herald.toml
+#   curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL .../install.sh | sudo sh -s -- --operator "$USER" --config ./ansage.toml
 #
 # Options:
-#   --config PATH    install PATH as /etc/herald/herald.toml (checked with the
+#   --config PATH    install PATH as /etc/ansage/ansage.toml (checked with the
 #                    new binary first; the old one is kept as .bak.<time>)
-#   --operator USER  add USER to group herald, for `herald show` etc.
-#   --restart        if herald is running and the binary or unit changed,
-#                    restart it with `herald upgrade` (refuses if a neighbor
+#   --operator USER  add USER to group ansage, for `ansage show` etc.
+#   --restart        if ansage is running and the binary or unit changed,
+#                    restart it with `ansage upgrade` (refuses if a neighbor
 #                    would withdraw our routes; then restart by hand)
 #   --binary PATH    install this binary instead of downloading one
 #
 # Environment:
-#   HERALD_VERSION   release tag to install, e.g. v0.1.0 (default: latest)
-#   HERALD_BASE_URL  download from here instead of GitHub Releases; must hold
-#                    herald-<arch>-linux-musl, herald.service and SHA256SUMS
+#   ANSAGE_VERSION   release tag to install, e.g. v0.1.0 (default: latest)
+#   ANSAGE_BASE_URL  download from here instead of GitHub Releases; must hold
+#                    ansage-<arch>-linux-musl, ansage.service and SHA256SUMS
 #
-# What it does: creates the system user/group herald, installs
-# /usr/local/bin/herald, /etc/herald (root:herald 0750, files 0640: they may
+# What it does: creates the system user/group ansage, installs
+# /usr/local/bin/ansage, /etc/ansage (root:ansage 0750, files 0640: they may
 # hold TCP-MD5 keys) and the hardened unit, enables it and starts it once a
 # config exists. Safe to run again: only changed files are replaced (old ones
 # kept as .bak.<time>), a changed config is applied with a reload, and a
-# running herald is not restarted unless --restart is given.
+# running ansage is not restarted unless --restart is given.
 
 # Everything is in main, called on the last line: a download cut short runs
 # nothing.
 main() {
     set -eu
-    REPO=miggish/herald
-    BIN=/usr/local/bin/herald
-    ETC=/etc/herald
-    CONF=$ETC/herald.toml
-    UNIT=/etc/systemd/system/herald.service
+    REPO=miggish/ansage
+    BIN=/usr/local/bin/ansage
+    ETC=/etc/ansage
+    CONF=$ETC/ansage.toml
+    UNIT=/etc/systemd/system/ansage.service
 
     binary="" config="" operators="" restart=false
     while [ $# -gt 0 ]; do
@@ -55,12 +55,12 @@ main() {
     case "$(uname -m)" in
         x86_64|amd64) arch=x86_64 ;;
         aarch64|arm64) arch=aarch64 ;;
-        *) die "no herald build for $(uname -m)" ;;
+        *) die "no ansage build for $(uname -m)" ;;
     esac
-    if [ -n "${HERALD_BASE_URL:-}" ]; then
-        base=${HERALD_BASE_URL%/}
-    elif [ -n "${HERALD_VERSION:-}" ]; then
-        base=https://github.com/$REPO/releases/download/$HERALD_VERSION
+    if [ -n "${ANSAGE_BASE_URL:-}" ]; then
+        base=${ANSAGE_BASE_URL%/}
+    elif [ -n "${ANSAGE_VERSION:-}" ]; then
+        base=https://github.com/$REPO/releases/download/$ANSAGE_VERSION
     else
         base=https://github.com/$REPO/releases/latest/download
     fi
@@ -70,34 +70,34 @@ main() {
     stamp=$(date +%Y%m%d-%H%M%S)
 
     # --- download ---------------------------------------------------------
-    asset=herald-$arch-linux-musl
+    asset=ansage-$arch-linux-musl
     say "downloading from $base"
     fetch "$base/SHA256SUMS" "$work/SHA256SUMS"
-    fetch "$base/herald.service" "$work/herald.service"
+    fetch "$base/ansage.service" "$work/ansage.service"
     if [ -z "$binary" ]; then
         fetch "$base/$asset" "$work/$asset"
         verify "$asset"
         binary=$work/$asset
     fi
-    verify herald.service
+    verify ansage.service
     chmod 0755 "$binary"
     version=$("$binary" --version) || die "$binary --version failed"
 
     # --- user and group ---------------------------------------------------
-    if ! getent group herald >/dev/null; then
-        say "creating group herald"
-        groupadd --system herald
+    if ! getent group ansage >/dev/null; then
+        say "creating group ansage"
+        groupadd --system ansage
     fi
-    if ! getent passwd herald >/dev/null; then
-        say "creating user herald"
-        useradd --system --gid herald --no-create-home --home-dir /nonexistent \
-            --shell /usr/sbin/nologin --comment "herald BGP speaker" herald
+    if ! getent passwd ansage >/dev/null; then
+        say "creating user ansage"
+        useradd --system --gid ansage --no-create-home --home-dir /nonexistent \
+            --shell /usr/sbin/nologin --comment "ansage BGP speaker" ansage
     fi
     for u in $operators; do
         getent passwd "$u" >/dev/null || die "operator $u does not exist"
-        if ! id -nG "$u" | tr ' ' '\n' | grep -qx herald; then
-            say "adding $u to group herald (takes effect at their next login)"
-            usermod -aG herald "$u"
+        if ! id -nG "$u" | tr ' ' '\n' | grep -qx ansage; then
+            say "adding $u to group ansage (takes effect at their next login)"
+            usermod -aG ansage "$u"
         fi
     done
 
@@ -107,18 +107,18 @@ main() {
     if [ -f "$check" ]; then
         "$binary" check -c "$check" || die "$check is not valid for $version"
     fi
-    install -d -o root -g herald -m 0750 "$ETC"
+    install -d -o root -g ansage -m 0750 "$ETC"
     conf_changed=false restart_needed=false
     if [ -n "$config" ] && ! { [ -f "$CONF" ] && cmp -s "$config" "$CONF"; }; then
         backup "$CONF"
         say "installing $CONF"
-        install -o root -g herald -m 0640 "$config" "$CONF"
+        install -o root -g ansage -m 0640 "$config" "$CONF"
         conf_changed=true
     fi
     for f in "$ETC"/*; do
         case "$f" in *.bak.*) continue ;; esac
         [ -f "$f" ] || continue
-        chown root:herald "$f"
+        chown root:ansage "$f"
         chmod 0640 "$f"
     done
 
@@ -127,7 +127,7 @@ main() {
         say "binary unchanged ($version)"
     else
         say "installing $BIN ($version)"
-        # Atomic: a running herald keeps its (old) file.
+        # Atomic: a running ansage keeps its (old) file.
         install -o root -g root -m 0755 "$binary" "$BIN.new"
         mv -f "$BIN.new" "$BIN"
         restart_needed=true
@@ -140,77 +140,77 @@ main() {
     if [ -n "$sysd" ] && [ "$sysd" -lt 253 ]; then
         # No Type=notify-reload before systemd 253.
         sed -i -e 's/^Type=notify-reload$/Type=notify/' \
-            -e 's|^#ExecReload=|ExecReload=|' "$work/herald.service"
+            -e 's|^#ExecReload=|ExecReload=|' "$work/ansage.service"
     fi
     if [ -f "$CONF" ] && grep -q '^[[:space:]]*\[kernel\]' "$CONF"; then
-        # herald installs routes: it needs CAP_NET_ADMIN and netlink.
+        # ansage installs routes: it needs CAP_NET_ADMIN and netlink.
         sed -i -e 's/^#\(AmbientCapabilities=CAP_NET_ADMIN\)$/\1/' \
             -e 's/^#\(CapabilityBoundingSet=CAP_NET_ADMIN\)$/\1/' \
-            -e 's/^#\(RestrictAddressFamilies=AF_NETLINK\)$/\1/' "$work/herald.service"
+            -e 's/^#\(RestrictAddressFamilies=AF_NETLINK\)$/\1/' "$work/ansage.service"
     fi
-    if [ -f "$UNIT" ] && cmp -s "$work/herald.service" "$UNIT"; then
+    if [ -f "$UNIT" ] && cmp -s "$work/ansage.service" "$UNIT"; then
         say "unit unchanged"
     else
         backup "$UNIT"
         say "installing $UNIT"
-        install -o root -g root -m 0644 "$work/herald.service" "$UNIT"
+        install -o root -g root -m 0644 "$work/ansage.service" "$UNIT"
         systemctl daemon-reload
         restart_needed=true
     fi
-    systemctl enable --quiet herald
+    systemctl enable --quiet ansage
 
     # --- start ------------------------------------------------------------
     if [ ! -f "$CONF" ]; then
         say "no $CONF yet: write one (README: 'A minimal config'), then"
-        echo "      herald check -c $CONF && systemctl start herald"
+        echo "      ansage check -c $CONF && systemctl start ansage"
         return 0
     fi
     # Also when an earlier run replaced the binary or the unit but did not
     # restart: either is newer than the running process. (Not readlink
     # /proc/PID/exe: needs ptrace rights on a process of another user.)
-    # Whole seconds: installed in the same second herald started = older.
-    started=$(systemctl show -p ExecMainStartTimestamp --value herald 2>/dev/null || true)
+    # Whole seconds: installed in the same second ansage started = older.
+    started=$(systemctl show -p ExecMainStartTimestamp --value ansage 2>/dev/null || true)
     if [ -n "$started" ] && started=$(date -d "$started" +%s 2>/dev/null); then
         for f in "$BIN" "$UNIT"; do
             [ "$(stat -c %Y "$f")" -le "$started" ] || restart_needed=true
         done
     fi
-    if ! systemctl is-active --quiet herald; then
-        say "starting herald"
-        systemctl start herald
+    if ! systemctl is-active --quiet ansage; then
+        say "starting ansage"
+        systemctl start ansage
     elif $restart_needed && $restart; then
-        say "restarting herald with herald upgrade"
+        say "restarting ansage with ansage upgrade"
         "$BIN" -c "$CONF" upgrade --binary "$BIN" ||
-            die "herald upgrade refused or failed (restart by hand: systemctl restart herald)"
+            die "ansage upgrade refused or failed (restart by hand: systemctl restart ansage)"
     else
         # Also before a pending restart: the running process takes the new
         # config now. If it rejects it, it keeps running with the old one.
         if $conf_changed; then
-            say "reloading herald"
+            say "reloading ansage"
             "$BIN" -c "$CONF" reload ||
-                die "herald rejected $CONF and runs on with the old config (kept as $CONF.bak.$stamp)"
+                die "ansage rejected $CONF and runs on with the old config (kept as $CONF.bak.$stamp)"
         fi
         if $restart_needed; then
-            say "herald still runs the old binary/unit. To switch:"
-            echo "      herald upgrade --dry-run    # which neighbors keep our routes"
-            echo "      herald upgrade              # or: systemctl restart herald"
+            say "ansage still runs the old binary/unit. To switch:"
+            echo "      ansage upgrade --dry-run    # which neighbors keep our routes"
+            echo "      ansage upgrade              # or: systemctl restart ansage"
         elif ! $conf_changed; then
-            say "herald is running, nothing changed"
+            say "ansage is running, nothing changed"
         fi
     fi
-    systemctl --no-pager --lines=0 status herald || true
+    systemctl --no-pager --lines=0 status ansage || true
 }
 
 say() { echo "==> $*"; }
-die() { echo "herald install: $*" >&2; exit 1; }
+die() { echo "ansage install: $*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
 usage: curl -fsSL .../install.sh | sudo sh -s -- [options]
-  --config PATH    install PATH as /etc/herald/herald.toml
-  --operator USER  add USER to group herald (may repeat)
-  --restart        restart a running herald (herald upgrade) if it changed
+  --config PATH    install PATH as /etc/ansage/ansage.toml
+  --operator USER  add USER to group ansage (may repeat)
+  --restart        restart a running ansage (ansage upgrade) if it changed
   --binary PATH    install this binary instead of downloading one
-env: HERALD_VERSION=vX.Y.Z, HERALD_BASE_URL=https://...
+env: ANSAGE_VERSION=vX.Y.Z, ANSAGE_BASE_URL=https://...
 EOF
 }
 fetch() {

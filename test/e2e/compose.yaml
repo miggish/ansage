@@ -1,4 +1,4 @@
-# herald end-to-end test network.
+# ansage end-to-end test network.
 #
 #  user1 --[u1]-- r1 (FRR) ----[core]---- r2 (BIRD) --[u2]-- user2
 #                  |              |              |
@@ -21,14 +21,14 @@
 # took ~45 s). Real hosts keep their MAC across restarts too.
 # Documentation values only (RFC 5398 ASNs, RFC 5737 / RFC 3849 prefixes).
 
-name: herald-e2e
+name: ansage-e2e
 
 x-node: &node
   build:
     context: images
     dockerfile: Containerfile
     target: node
-  image: herald-e2e-node
+  image: ansage-e2e-node
   init: true
   cap_add: [NET_ADMIN, NET_RAW]
   sysctls: &node-sysctls
@@ -38,7 +38,7 @@ x-node: &node
 x-server: &server
   <<: *node
   environment: &server-env
-    RUST_LOG: herald=debug
+    RUST_LOG: ansage=debug
     NO_COLOR: "1"
     SERVICE_V4: 192.0.2.10
     SERVICE_V6: 2001:db8:1::10
@@ -94,7 +94,7 @@ services:
       context: images
       dockerfile: Containerfile
       target: bird
-    image: herald-e2e-bird
+    image: ansage-e2e-bird
     hostname: r2
     sysctls: *router-sysctls
     environment:
@@ -116,8 +116,8 @@ services:
       GW_V4: 10.201.11.2
       GW_V6: 2001:db8:201:11::2
     volumes:
-      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
-      - ./config/srv-a/herald.toml:/etc/herald.toml:ro
+      - ../../target/x86_64-unknown-linux-musl/release/ansage:/usr/local/bin/ansage:ro
+      - ./config/srv-a/ansage.toml:/etc/ansage.toml:ro
     networks:
       a: { interface_name: a, mac_address: "02:00:01:11:00:10", driver_opts: *v6on }
 
@@ -130,8 +130,8 @@ services:
       GW_V4: 10.201.12.2
       GW_V6: 2001:db8:201:12::2
     volumes:
-      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
-      - ./config/srv-b/herald.toml:/etc/herald.toml:ro
+      - ../../target/x86_64-unknown-linux-musl/release/ansage:/usr/local/bin/ansage:ro
+      - ./config/srv-b/ansage.toml:/etc/ansage.toml:ro
     networks:
       b: { interface_name: b, mac_address: "02:00:01:12:00:10", driver_opts: *v6on }
 
@@ -139,20 +139,20 @@ services:
     <<: *server
     hostname: srv-c
     environment:
-      RUST_LOG: herald=debug
+      RUST_LOG: ansage=debug
       NO_COLOR: "1"
       SERVICE_V4: 198.51.100.10
       SERVICE_V6: 2001:db8:2::10
       ADDRS: core=10.201.0.10/24,2001:db8:201::10/64
       GW_V4: 10.201.0.2
       GW_V6: 2001:db8:201::2
-      HERALD_USER: ${SRV_C_USER:-}
-      HERALD_SUPERVISED: ${SRV_C_SUPERVISED:-}
-      HERALD_CRASH_TEST: ${SRV_C_CRASH_TEST:-}
-      HERALD_STAY: ${SRV_C_STAY:-}
+      ANSAGE_USER: ${SRV_C_USER:-}
+      ANSAGE_SUPERVISED: ${SRV_C_SUPERVISED:-}
+      ANSAGE_CRASH_TEST: ${SRV_C_CRASH_TEST:-}
+      ANSAGE_STAY: ${SRV_C_STAY:-}
     volumes:
-      - ../../target/x86_64-unknown-linux-musl/release/herald:/usr/local/bin/herald:ro
-      - ./config/srv-c/${SRV_C_CONFIG:-herald.toml}:/etc/herald.toml:ro
+      - ../../target/x86_64-unknown-linux-musl/release/ansage:/usr/local/bin/ansage:ro
+      - ./config/srv-c/${SRV_C_CONFIG:-ansage.toml}:/etc/ansage.toml:ro
     networks:
       # Fixed MAC: stable link-local address fe80::ff:feff:10 for N5.
       core: { interface_name: core, mac_address: "02:00:00:ff:00:10", driver_opts: *v6on }

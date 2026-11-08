@@ -3,6 +3,33 @@
 version = 4
 
 [[package]]
+name = "ansage-bgp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "thiserror",
+]
+
+[[package]]
+name = "ansage-fuzz"
+version = "0.0.0"
+dependencies = [
+ "ansage-bgp",
+ "ansage-netlink",
+ "bytes",
+ "libfuzzer-sys",
+]
+
+[[package]]
+name = "ansage-netlink"
+version = "0.1.0"
+dependencies = [
+ "ansage-bgp",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -47,33 +74,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
-]
-
-[[package]]
-name = "herald-bgp"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "thiserror",
-]
-
-[[package]]
-name = "herald-fuzz"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "herald-bgp",
- "herald-netlink",
- "libfuzzer-sys",
-]
-
-[[package]]
-name = "herald-netlink"
-version = "0.1.0"
-dependencies = [
- "herald-bgp",
- "libc",
- "thiserror",
 ]
 
 [[package]]

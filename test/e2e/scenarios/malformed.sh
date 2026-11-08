@@ -9,7 +9,7 @@
 m_restore() {
     rogue_save
     rogue_stop
-    srv_c_use herald.toml
+    srv_c_use ansage.toml
 }
 
 # m_begin [srv_c_conf key=value...]: starts the rogue with the script on stdin,
@@ -22,31 +22,31 @@ m_begin() {
     M_START=$(now)
     srv_c_conf m "extra=$(rogue_neighbor)" "$@"
     srv_c_use gen-m.toml
-    wait_until 30 herald_established srv-c 10.201.0.2
-    wait_until 30 herald_established srv-c 10.201.0.3
+    wait_until 30 ansage_established srv-c 10.201.0.2
+    wait_until 30 ansage_established srv-c 10.201.0.3
     M_SINCE=$(now)
 }
 
 # srv-c's real sessions stayed up since m_begin.
 m_real_ok() {
     if log_has srv-c "$M_SINCE" 'addr=10\.201\.0\.[23]:179.*session down'; then
-        fail "srv-c lost a real session: $(herald_logs srv-c "$M_SINCE" | grep 'session down')"
+        fail "srv-c lost a real session: $(ansage_logs srv-c "$M_SINCE" | grep 'session down')"
     fi
-    herald_established srv-c 10.201.0.2 || fail "srv-c: session to r1 is not Established"
-    herald_established srv-c 10.201.0.3 || fail "srv-c: session to r2 is not Established"
+    ansage_established srv-c 10.201.0.2 || fail "srv-c: session to r1 is not Established"
+    ansage_established srv-c 10.201.0.3 || fail "srv-c: session to r2 is not Established"
 }
 
-# herald (srv-c) has a route for PREFIX from the rogue.
-m_has_route() { herald_routes srv-c "$1" | grep -E "^[^ ]+ $ROGUE_ASN" >/dev/null; }
+# ansage (srv-c) has a route for PREFIX from the rogue.
+m_has_route() { ansage_routes srv-c "$1" | grep -E "^[^ ]+ $ROGUE_ASN" >/dev/null; }
 
 # NOTIFICATIONs srv-c sent to the rogue, "code/subcode" per line, from its log.
 m_sent() {
-    herald_logs srv-c "$M_START" | grep 'addr=10.201.0.20:179.*session down: sent NOTIFICATION' |
+    ansage_logs srv-c "$M_START" | grep 'addr=10.201.0.20:179.*session down: sent NOTIFICATION' |
         sed -E 's/.*\(([0-9]+\/[0-9]+)\).*/\1/'
 }
 
-# CPU time of srv-c's herald in clock ticks (user + system).
-herald_cpu() { on_sh srv-c 'awk "{ print \$14 + \$15 }" /proc/$(pidof herald)/stat'; }
+# CPU time of srv-c's ansage in clock ticks (user + system).
+ansage_cpu() { on_sh srv-c 'awk "{ print \$14 + \$15 }" /proc/$(pidof ansage)/stat'; }
 
 scenario M1 default - "RFC 7606: malformed attributes -> treat-as-withdraw / discard, session stays"
 scn_M1() {
@@ -66,10 +66,10 @@ EOF
     wait_log srv-c "$M_START" 'treated as withdrawn \(RFC 7606\) err=attribute length error \(type 4\) .*routes=\["10.99.1.0/24"\] update=[0-9a-f]{20,}' 20
     wait_log srv-c "$M_START" 'treated as withdrawn .*routes=\["2001:db8:99:1::/64"\] update=[0-9a-f]{20,}' 5
     wait_log srv-c "$M_START" 'malformed attributes discarded .*routes=\["10.99.2.0/24"\]' 5
-    wait_until 5 eval '[ "$(herald_received srv-c $ROGUE)" = "1 0" ]'
+    wait_until 5 eval '[ "$(ansage_received srv-c $ROGUE)" = "1 0" ]'
     m_has_route 10.99.2.0/24 || fail "10.99.2.0/24 is gone (attribute discard must keep it)"
     if m_has_route 10.99.1.0/24; then fail "10.99.1.0/24 still stored (treat-as-withdraw)"; fi
-    herald_established srv-c $ROGUE || fail "rogue session went down"
+    ansage_established srv-c $ROGUE || fail "rogue session went down"
     [ -z "$(m_sent)" ] || fail "srv-c sent a NOTIFICATION: $(m_sent)"
     rogue_ok
     m_real_ok
@@ -108,7 +108,7 @@ EOF
     rogue_has 'recv NOTIFICATION .* 1/2 data=0014$' || fail "no length 20 in the Bad Message Length data"
     rogue_has 'recv NOTIFICATION .* 1/3 data=09$' || fail "no type 9 in the Bad Message Type data"
     [ "$(m_sent | xargs)" = "1/1 1/2 1/2 1/3" ] || fail "srv-c sent '$(m_sent | xargs)'"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
@@ -142,7 +142,7 @@ EOF
     rogue_has 'recv NOTIFICATION .* 5/1 data=02$' || fail "5/1 without type UPDATE as data"
     rogue_has 'recv NOTIFICATION .* 5/2 data=01$' || fail "5/2 without type OPEN as data"
     rogue_has 'recv NOTIFICATION .* 5/3 data=01$' || fail "5/3 without type OPEN as data"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
@@ -173,11 +173,11 @@ EOF
     rogue_ok
     # RFC 4271 §6.2: Unsupported Version Number carries the version we support.
     rogue_has 'recv NOTIFICATION .* 2/1 data=0004$' || fail "2/1 without version 4 as data"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
-scenario M5 full - "silent peer: herald gives up after the OpenSent hold time (240 s)"
+scenario M5 full - "silent peer: ansage gives up after the OpenSent hold time (240 s)"
 scn_M5() {
     m_begin <<'EOF'
 accept 30
@@ -216,16 +216,16 @@ handshake
 run 120
 EOF
     local cpu0 cpu1 t0
-    cpu0=$(herald_cpu)
+    cpu0=$(ansage_cpu)
     t0=$(now)
     wait_until 40 m_has_route 10.99.6.0/24
-    cpu1=$(herald_cpu)
+    cpu1=$(ansage_cpu)
     measure "CPU while trickling ($(elapsed "$t0") s)" "$((cpu1 - cpu0))" ticks
-    [ $((cpu1 - cpu0)) -le 100 ] || fail "herald used $((cpu1 - cpu0)) ticks while the peer trickled"
+    [ $((cpu1 - cpu0)) -le 100 ] || fail "ansage used $((cpu1 - cpu0)) ticks while the peer trickled"
     wait_until 40 rogue_has '> run 120'
     rogue_ok
     [ "$(m_sent | xargs)" = "4/0" ] || fail "srv-c sent '$(m_sent | xargs)', expected Hold Timer Expired"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
@@ -244,7 +244,7 @@ EOF
     rogue_ok
     assert_log srv-c "$M_START" 'addr=10.201.0.20:179.*session down: connection closed'
     [ -z "$(m_sent)" ] || fail "srv-c sent a NOTIFICATION: $(m_sent)"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
@@ -267,16 +267,16 @@ EOF
     wait_until 30 rogue_has '> run 120'
     rogue_ok
     local lines
-    lines=$(herald_logs srv-c "$M_START" | grep 'addr=10.201.0.20:179.*peer sent NOTIFICATION')
+    lines=$(ansage_logs srv-c "$M_START" | grep 'addr=10.201.0.20:179.*peer sent NOTIFICATION')
     [ "$(wc -l <<<"$lines")" = 2 ] || fail "expected 2 NOTIFICATION lines, got:
 $lines"
     if LC_ALL=C grep -n '[^[:print:]]' <<<"$lines"; then fail "unprintable bytes in the log"; fi
     info "$(cut -c1-200 <<<"$lines" | sed 's/^.*session down/session down/')"
-    wait_until 10 herald_established srv-c $ROGUE
+    wait_until 10 ansage_established srv-c $ROGUE
     m_real_ok
 }
 
-scenario M9 full - "65535-byte UPDATE: accepted with and without extended messages (herald always accepts them)"
+scenario M9 full - "65535-byte UPDATE: accepted with and without extended messages (ansage always accepts them)"
 scn_M9() {
     m_begin <<'EOF'
 accept 30
@@ -304,7 +304,7 @@ handshake
 announce 10.99.10.0/24 224.1.0.0/16 240.0.0.0/8 2001:db8:99::/48 ff02::/16
 run 120
 EOF
-    wait_until 30 eval '[ "$(herald_received srv-c $ROGUE)" = "1 1" ]'
+    wait_until 30 eval '[ "$(ansage_received srv-c $ROGUE)" = "1 1" ]'
     local p
     for p in 224.1.0.0/16 240.0.0.0/8 ff02::/16; do
         if m_has_route "$p"; then fail "srv-c stored $p"; fi
@@ -315,7 +315,7 @@ EOF
     m_real_ok
 }
 
-scenario M11 full - "fuzz corpus live: every input on a session; herald survives, real sessions stay"
+scenario M11 full - "fuzz corpus live: every input on a session; ansage survives, real sessions stay"
 scn_M11() {
     allow_warn srv-c 'malformed'
     local n max=${E2E_M11_MAX:-200}
@@ -330,6 +330,6 @@ replay /fuzz/corpus/decode max=$max
 EOF
     rogue_wait $((max * 3 + 60))
     measure "replay" "'$(rogue_out | grep -o 'replay summary.*')'" ""
-    on srv-c pidof herald >/dev/null || fail "herald is not running"
+    on srv-c pidof ansage >/dev/null || fail "ansage is not running"
     m_real_ok
 }

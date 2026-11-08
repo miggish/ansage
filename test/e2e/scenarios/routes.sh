@@ -27,7 +27,7 @@ $(bird r2 show protocols all srv_c | grep Routes:)"
     # ... while it stores what it learns (import "all").
     local peer v4 v6
     for peer in 10.201.0.2 10.201.0.3; do
-        read -r v4 v6 <<<"$(herald_received srv-c "$peer")"
+        read -r v4 v6 <<<"$(ansage_received srv-c "$peer")"
         [ "$v4" -gt 0 ] 2>/dev/null && [ "$v6" -gt 0 ] || fail "srv-c: stored $v4/$v6 routes from $peer"
     done
 }
@@ -42,14 +42,14 @@ scn_R2() {
     log_has srv-a "" 'routes not eligible .*reason="AS loop"' || fail "srv-a: no AS loop drop logged"
     # Only the AS loop routes are missing from what srv-a stores.
     local v4 v6 sent4 sent6
-    read -r v4 v6 <<<"$(herald_received srv-a 10.201.11.2)"
+    read -r v4 v6 <<<"$(ansage_received srv-a 10.201.11.2)"
     sent4=$(frr r1 "show bgp summary json" | jq -r '.ipv4Unicast.peers["10.201.11.10"].pfxSnt')
     sent6=$(frr r1 "show bgp summary json" | jq -r '.ipv6Unicast.peers["10.201.11.10"].pfxSnt')
     [ "$v4" = $((sent4 - 1)) ] && [ "$v6" = $((sent6 - 1)) ] ||
         fail "srv-a stored $v4/$v6 of $sent4/$sent6 (expected all but the AS loop route)"
     # Its own prefix is in its RIB only as its own.
     local routes
-    routes=$(herald_routes srv-a 192.0.2.0/24)
+    routes=$(ansage_routes srv-a 192.0.2.0/24)
     [ "$routes" = "local - - best" ] || fail "srv-a: 192.0.2.0/24 candidates: $routes"
 }
 
@@ -59,9 +59,9 @@ scn_R3() {
     exported=$(bird r2 show protocols all srv_b | grep -c 'Routes:.* [1-9][0-9]* exported' || true)
     [ "$exported" = 2 ] || fail "r2 exports nothing to srv-b, test is void"
     local stored
-    stored=$(herald_received srv-b 10.201.12.2)
+    stored=$(ansage_received srv-b 10.201.12.2)
     [ "$stored" = "0 0" ] || fail "srv-b stored routes: $stored"
-    stored=$(herald_show srv-b summary | jq -r '"\(.rib.prefixes_ipv4) \(.rib.prefixes_ipv6)"')
+    stored=$(ansage_show srv-b summary | jq -r '"\(.rib.prefixes_ipv4) \(.rib.prefixes_ipv6)"')
     [ "$stored" = "1 1" ] || fail "srv-b's RIB should hold only its own prefixes, has $stored"
 }
 
@@ -78,9 +78,9 @@ scn_R4() {
         srv_c_conf "r4-$fam" r2_extra="max_prefixes_$fam = 3"
         srv_c_use "gen-r4-$fam.toml"
         wait_log srv-c "$since" "maximum number of prefixes exceeded, closing session peer=2 afi=Afi\\($afi\\) count=[0-9]+ limit=3" 15
-        # RFC 4486 §4 data: AFI, SAFI 1, limit 3, as herald recorded it.
+        # RFC 4486 §4 data: AFI, SAFI 1, limit 3, as ansage recorded it.
         local down_json
-        down_json=$(herald_peer srv-c 10.201.0.3 .status.last_down)
+        down_json=$(ansage_peer srv-c 10.201.0.3 .status.last_down)
         jq -e --arg data "$(printf '%04x0100000003' "$afi")" '.reason == "notification sent"
             and .notification.code == 6 and .notification.subcode == 1
             and .notification.data == $data' <<<"$down_json" >/dev/null ||
@@ -88,9 +88,9 @@ scn_R4() {
         log_has srv-c "$since" "90% of the prefix limit reached peer=2 afi=Afi\\($afi\\)" ||
             info "no 90% warning for $fam (the count jumped past it in one UPDATE)"
         # Reconnect after max_prefix_restart (5 s, jittered), not connect_retry.
-        wait_until 10 eval "herald_logs srv-c '$since' | grep -A20 'sent NOTIFICATION notification=cease (6/1)' | grep 'addr=10.201.0.3:179.*connecting' >/dev/null"
-        down=$(herald_logs srv-c "$since" | grep 'sent NOTIFICATION notification=cease (6/1)' | head -1 | cut -c1-26)
-        next=$(herald_logs srv-c "$since" | grep 'addr=10.201.0.3:179.*connecting' |
+        wait_until 10 eval "ansage_logs srv-c '$since' | grep -A20 'sent NOTIFICATION notification=cease (6/1)' | grep 'addr=10.201.0.3:179.*connecting' >/dev/null"
+        down=$(ansage_logs srv-c "$since" | grep 'sent NOTIFICATION notification=cease (6/1)' | head -1 | cut -c1-26)
+        next=$(ansage_logs srv-c "$since" | grep 'addr=10.201.0.3:179.*connecting' |
             awk -v d="$down" 'substr($0, 1, 26) > d { print substr($0, 1, 26); exit }')
         delay=$(awk -v a="$(date -d "$down" +%s.%N)" -v b="$(date -d "$next" +%s.%N)" 'BEGIN { printf "%.2f", b - a }')
         measure "$fam max-prefix reconnect delay" "$delay"
@@ -117,7 +117,7 @@ frr_own_next_hop_off() {
     done
 }
 
-scenario R5 default - "IPv4 next hop is herald itself: route not used"
+scenario R5 default - "IPv4 next hop is ansage itself: route not used"
 scn_R5() {
     trap frr_own_next_hop_off EXIT
     local since
@@ -126,7 +126,7 @@ scn_R5() {
     wait_log srv-c "$since" 'routes not eligible peer=1 .*reason="next hop is our address"' 10
 }
 
-scenario R13 default - "IPv6 next hop is herald's next_hop_ipv6: route not used"
+scenario R13 default - "IPv6 next hop is ansage's next_hop_ipv6: route not used"
 scn_R13() {
     trap frr_own_next_hop_off EXIT
     local since
@@ -136,11 +136,11 @@ scn_R13() {
     wait_log srv-c "$since" 'routes not eligible peer=1 .*reason="next hop is our address"' 10
 }
 
-# Routes srv-c stores from r2 right now: "v4 v6" (herald's control socket).
-srv_c_r2_counts() { herald_received srv-c 10.201.0.3; }
+# Routes srv-c stores from r2 right now: "v4 v6" (ansage's control socket).
+srv_c_r2_counts() { ansage_received srv-c 10.201.0.3; }
 srv_c_r2_counts_are() { [ "$(srv_c_r2_counts)" = "$1" ]; }
 
-# Restarts BIRD's srv_c session and waits for herald's End-of-RIB from it
+# Restarts BIRD's srv_c session and waits for ansage's End-of-RIB from it
 # (only where the time of a fresh initial sync is measured).
 srv_c_r2_resync() {
     local since
@@ -192,7 +192,7 @@ scn_R6() {
     sleep 2
     bird_established r2 srv_c || fail "srv_c session went down during churn"
     if log_has srv-c "$since" 'session down'; then fail "srv-c session flapped"; fi
-    # Without a session restart: herald's live count is back at the baseline.
+    # Without a session restart: ansage's live count is back at the baseline.
     poll_until 15 srv_c_r2_counts_are "$base" ||
         fail "srv-c counts $(srv_c_r2_counts) after churn, baseline $base"
 }
@@ -200,7 +200,7 @@ scn_R6() {
 scenario R7 full - "big inbound table: 100k IPv4 + 30k IPv6 from r2, withdraw all (R8), twice"
 scn_R7() {
     allow_flap srv-c
-    # herald keeps the memory of the big table; start srv-c
+    # ansage keeps the memory of the big table; start srv-c
     # fresh afterwards so the next scenarios compare with the baseline.
     trap 'bird_restore r2; compose restart -t 2 srv-c >/dev/null 2>&1' EXIT
     local base start t round v4 v6 b4 b6 rss rss1=
@@ -216,7 +216,7 @@ scn_R7() {
         read -r v4 v6 <<<"$(srv_c_r2_counts)"
         [ "$v4" = $((b4 + 100000)) ] && [ "$v6" = $((b6 + 30000)) ] ||
             fail "srv-c stored $v4/$v6, expected $((b4 + 100000))/$((b6 + 30000))"
-        info "round $round with 130k routes: fds/RSS KiB $(herald_resources srv-c)"
+        info "round $round with 130k routes: fds/RSS KiB $(ansage_resources srv-c)"
         if [ "$round" = 1 ]; then
             # Keepalives flow under load: the session survives 30 s with hold 9.
             sleep 30
@@ -225,11 +225,11 @@ scn_R7() {
         # R8: withdraw everything at once.
         start=$(now)
         bulk disable
-        # Until herald's live count is back (no session restart needed now).
+        # Until ansage's live count is back (no session restart needed now).
         poll_until 60 srv_c_r2_counts_are "$base" ||
             fail "R8: counts $(srv_c_r2_counts) after withdrawing, baseline $base"
-        measure "round $round: withdraw all until herald's count is back" "$(elapsed "$start")"
-        rss=$(herald_resources srv-c | awk '{ print $2 }')
+        measure "round $round: withdraw all until ansage's count is back" "$(elapsed "$start")"
+        rss=$(ansage_resources srv-c | awk '{ print $2 }')
         measure "round $round: RSS after withdraw" "$rss" KiB
         # No growth from round to round (retained capacity is fine, a leak is not).
         if [ -n "$rss1" ]; then
@@ -319,8 +319,8 @@ r12_filter() {
     done
 }
 
-# herald_routes_are SERVER PREFIX EXPECTED: candidates equal EXPECTED (lines joined by "; ").
-herald_routes_are() { [ "$(herald_routes "$1" "$2" | paste -sd';' | sed 's/;/; /g')" = "$3" ]; }
+# ansage_routes_are SERVER PREFIX EXPECTED: candidates equal EXPECTED (lines joined by "; ").
+ansage_routes_are() { [ "$(ansage_routes "$1" "$2" | paste -sd';' | sed 's/;/; /g')" = "$3" ]; }
 
 scenario R12 default - "same prefix from two peers: shorter path is best, falls back when withdrawn"
 scn_R12() {
@@ -329,17 +329,17 @@ scn_R12() {
     # r2 keeps r1's next hop on the shared subnet.
     local both4="10.201.0.2 64510 10.201.0.2 best; 10.201.0.3 64511,64510 10.201.0.2 -"
     local both6="10.201.0.2 64510 2001:db8:201::2 best; 10.201.0.3 64511,64510 2001:db8:201::2 -"
-    wait_until 5 herald_routes_are srv-c 10.201.1.0/24 "$both4"
-    wait_until 5 herald_routes_are srv-c 2001:db8:201:1::/64 "$both6"
+    wait_until 5 ansage_routes_are srv-c 10.201.1.0/24 "$both4"
+    wait_until 5 ansage_routes_are srv-c 2001:db8:201:1::/64 "$both6"
     local sessions
-    sessions=$(herald_peer srv-c 10.201.0.2 .counters.established)
+    sessions=$(ansage_peer srv-c 10.201.0.2 .counters.established)
     r12_filter on
-    wait_until 5 herald_routes_are srv-c 10.201.1.0/24 "10.201.0.3 64511,64510 10.201.0.2 best"
-    wait_until 5 herald_routes_are srv-c 2001:db8:201:1::/64 "10.201.0.3 64511,64510 2001:db8:201::2 best"
+    wait_until 5 ansage_routes_are srv-c 10.201.1.0/24 "10.201.0.3 64511,64510 10.201.0.2 best"
+    wait_until 5 ansage_routes_are srv-c 2001:db8:201:1::/64 "10.201.0.3 64511,64510 2001:db8:201::2 best"
     # The withdrawal did not reset the session.
-    [ "$(herald_peer srv-c 10.201.0.2 .counters.established)" = "$sessions" ] ||
+    [ "$(ansage_peer srv-c 10.201.0.2 .counters.established)" = "$sessions" ] ||
         fail "srv-c's session to r1 restarted"
     r12_filter off
-    wait_until 5 herald_routes_are srv-c 10.201.1.0/24 "$both4"
-    wait_until 5 herald_routes_are srv-c 2001:db8:201:1::/64 "$both6"
+    wait_until 5 ansage_routes_are srv-c 10.201.1.0/24 "$both4"
+    wait_until 5 ansage_routes_are srv-c 2001:db8:201:1::/64 "$both6"
 }

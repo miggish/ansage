@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# herald e2e test runner.
+# ansage e2e test runner.
 #
 #   e2e/run.sh [-l] [ID|GROUP...]     e.g. run.sh, run.sh B3 F, run.sh -l
 #
 # Expects the network to be up (`just e2e-up`). Runs preflight, takes a
-# baseline (router RIBs, herald resources), then each selected scenario in its
+# baseline (router RIBs, ansage resources), then each selected scenario in its
 # own subshell followed by the invariant check. Exits non-zero if anything
 # failed (an xfail that fails is fine; an xfail that passes is reported).
 #
 # With E2E_JOBS > 1 it uses that many copies of the network (compose projects
-# herald-e2e-1..N): one worker per copy takes scenarios from a shared queue,
+# ansage-e2e-1..N): one worker per copy takes scenarios from a shared queue,
 # longest first (durations of the last run). Scenario output then goes only to
 # out/<run>/<ID>.log; the console gets one result line per scenario.
 #
@@ -38,7 +38,7 @@ SCN_IDS=()
 declare -A SCN_TIER SCN_XFAIL SCN_DESC
 
 # scenario ID TIER XFAIL DESCRIPTION; the body is the function scn_ID.
-# TIER: default or full. XFAIL: "-" or a short note on the known herald bug.
+# TIER: default or full. XFAIL: "-" or a short note on the known ansage bug.
 scenario() {
     SCN_IDS+=("$1")
     SCN_TIER[$1]=$2
@@ -76,8 +76,8 @@ SESSIONS=(
     "bird r2 r1"
 )
 
-# The same sessions from herald's side (its control socket): "SERVER NEIGHBOR".
-HERALD_SESSIONS=(
+# The same sessions from ansage's side (its control socket): "SERVER NEIGHBOR".
+ANSAGE_SESSIONS=(
     "srv-a 10.201.11.2"
     "srv-b 10.201.12.2"
     "srv-c 10.201.0.2"
@@ -93,10 +93,10 @@ all_established() {
             return 1
         }
     done
-    for s in "${HERALD_SESSIONS[@]}"; do
+    for s in "${ANSAGE_SESSIONS[@]}"; do
         read -r server peer <<<"$s"
-        herald_established "$server" "$peer" || {
-            echo "$server (herald) $peer: $(herald_state "$server" "$peer")"
+        ansage_established "$server" "$peer" || {
+            echo "$server (ansage) $peer: $(ansage_state "$server" "$peer")"
             return 1
         }
     done
@@ -160,28 +160,28 @@ take_baseline() {
     rm -r "$prev"
     local s
     for s in "${SERVERS[@]}"; do
-        herald_resources "$s" >"$COPY_DIR/baseline/res.$s"
+        ansage_resources "$s" >"$COPY_DIR/baseline/res.$s"
     done
 }
 
-# Unexpected WARN/ERROR lines and panics in herald logs since $1.
+# Unexpected WARN/ERROR lines and panics in ansage logs since $1.
 check_logs() {
     local since=$1 s bad allow
     for s in "${SERVERS[@]}"; do
         allow=$(awk -F'\t' -v s="$s" '$1 == s { print $2 }' "$COPY_DIR/allow" 2>/dev/null | paste -sd'|')
-        bad=$(herald_logs "$s" "$since" | grep -E ' (WARN|ERROR) |panicked' |
+        bad=$(ansage_logs "$s" "$since" | grep -E ' (WARN|ERROR) |panicked' |
             { if [ -n "$allow" ]; then grep -vE "$allow"; else cat; fi } || true)
         [ -z "$bad" ] || fail "$s: unexpected log lines:
 $bad"
     done
 }
 
-# fds and RSS of each herald within bounds of the baseline (leak check).
+# fds and RSS of each ansage within bounds of the baseline (leak check).
 check_resources() {
     local s base_fd base_rss fd rss
     for s in "${SERVERS[@]}"; do
         read -r base_fd base_rss <"$COPY_DIR/baseline/res.$s"
-        read -r fd rss < <(herald_resources "$s") || fail "$s: herald is not running"
+        read -r fd rss < <(ansage_resources "$s") || fail "$s: ansage is not running"
         [ "$fd" -le $((base_fd + 4)) ] || fail "$s: $fd open fds, baseline $base_fd"
         [ "$rss" -le $((base_rss * 3 / 2 + 4096)) ] || fail "$s: RSS $rss KiB, baseline $base_rss KiB"
     done
@@ -213,9 +213,9 @@ dump_state() {
         echo "== r2 protocols"
         bird r2 show protocols
         for n in "${SERVERS[@]}"; do
-            echo "== $n herald show summary / peers"
-            on "$n" herald show summary 2>&1
-            on "$n" herald show peers 2>&1
+            echo "== $n ansage show summary / peers"
+            on "$n" ansage show summary 2>&1
+            on "$n" ansage show peers 2>&1
         done
         for n in "${NODES[@]}"; do
             echo "== $n routes"
@@ -224,7 +224,7 @@ dump_state() {
         done
         for n in "${SERVERS[@]}"; do
             echo "== $n log since scenario start"
-            herald_logs "$n" "$since"
+            ansage_logs "$n" "$since"
         done
     } >"$file" 2>&1
 }
@@ -334,7 +334,7 @@ cache_names() {
 # One copy: preflight, baseline, then scenarios from the queue until empty.
 worker() {
     COPY=$1
-    E2E_PROJECT=herald-e2e-$COPY
+    E2E_PROJECT=ansage-e2e-$COPY
     COPY_DIR=$RUN_DIR/copy-$COPY
     mkdir -p "$COPY_DIR"
     cache_names

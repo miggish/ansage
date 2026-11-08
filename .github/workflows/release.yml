@@ -1,6 +1,6 @@
 # Push a tag vX.Y.Z (matching Cargo.toml's version) to publish a release with
 # static binaries, the unit and the installer:
-#   curl -fsSL https://github.com/miggish/herald/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh | sudo sh
 name: release
 
 on:
@@ -34,13 +34,13 @@ jobs:
         run: cargo test --release --locked
       - name: Build
         run: |
-          cargo build --release --locked --bin herald --target ${{ matrix.arch }}-unknown-linux-musl
-          cp target/${{ matrix.arch }}-unknown-linux-musl/release/herald herald-${{ matrix.arch }}-linux-musl
-          ./herald-${{ matrix.arch }}-linux-musl --version
+          cargo build --release --locked --bin ansage --target ${{ matrix.arch }}-unknown-linux-musl
+          cp target/${{ matrix.arch }}-unknown-linux-musl/release/ansage ansage-${{ matrix.arch }}-linux-musl
+          ./ansage-${{ matrix.arch }}-linux-musl --version
       - uses: actions/upload-artifact@v4
         with:
-          name: herald-${{ matrix.arch }}
-          path: herald-${{ matrix.arch }}-linux-musl
+          name: ansage-${{ matrix.arch }}
+          path: ansage-${{ matrix.arch }}-linux-musl
 
   release:
     needs: build
@@ -55,9 +55,9 @@ jobs:
           merge-multiple: true
       - name: Assets
         run: |
-          cp dist/install.sh dist/herald.service out/
+          cp dist/install.sh dist/ansage.service out/
           cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "herald $GITHUB_REF_NAME" --generate-notes out/*
+        run: gh release create "$GITHUB_REF_NAME" --title "ansage $GITHUB_REF_NAME" --generate-notes out/*

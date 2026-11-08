@@ -1,0 +1,24 @@
+[package]
+name = "ansage-bgp"
+description = "BGP-4 messages (RFC 4271) and a sans-I/O session state machine"
+readme = "README.md"
+keywords = ["bgp", "routing", "network", "protocol"]
+categories = ["network-programming", "parser-implementations"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# `Serialize` for the session state (e.g. for a JSON status).
+serde = ["dep:serde"]
+
+[dependencies]
+bytes.workspace = true
+serde = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+clap.workspace = true
+tokio.workspace = true

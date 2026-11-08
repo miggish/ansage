@@ -23,7 +23,7 @@ ${K_KERNEL:-}" "$@"
     wait_until 10 k_via_is 192.0.2.0/24 "$R1" || fail "192.0.2.0/24 not in srv-c's kernel via r1"
 }
 
-# k_via PREFIX: the gateway of herald's kernel route for PREFIX (empty: none).
+# k_via PREFIX: the gateway of ansage's kernel route for PREFIX (empty: none).
 k_via() {
     local fam=-4
     [[ $1 == *:* ]] && fam=-6
@@ -33,18 +33,18 @@ k_via() {
 k_via_is() { [ "$(k_via "$1")" = "$2" ]; }
 k_absent() { [ -z "$(k_via "$1")" ]; }
 
-# Number of herald's kernel routes (both families).
+# Number of ansage's kernel routes (both families).
 k_count() {
     on_sh srv-c 'ip -4 route show proto bgp; ip -6 route show proto bgp' | wc -l
 }
 
-fib_json() { on srv-c herald show fib --json; }
+fib_json() { on srv-c ansage show fib --json; }
 
-k_herald_gone() { ! on srv-c pidof herald >/dev/null 2>&1; }
+k_ansage_gone() { ! on srv-c pidof ansage >/dev/null 2>&1; }
 
 scenario K1 default - "[kernel]: srv-c installs the routers' best routes; own and connected prefixes stay out"
 scn_K1() {
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     k_start k1
     wait_until 10 k_via_is 10.201.2.0/24 "$R2" || fail "user2's network not via r2"
     wait_until 10 k_via_is 2001:db8:1::/48 2001:db8:201::2 || fail "2001:db8:1::/48 not via r1"
@@ -71,7 +71,7 @@ scn_K1() {
 scenario K2 default - "r1's session goes down: srv-c's kernel route moves to r2, and back"
 scn_K2() {
     allow_flap srv-c
-    trap 'frr_conf r1 "router bgp 64510" "no neighbor 10.201.0.10 shutdown" >/dev/null; srv_c_use herald.toml' EXIT
+    trap 'frr_conf r1 "router bgp 64510" "no neighbor 10.201.0.10 shutdown" >/dev/null; srv_c_use ansage.toml' EXIT
     k_start k2
     local start t
     start=$(now)
@@ -89,7 +89,7 @@ scn_K2() {
 scenario K3 default - "r1's address becomes unreachable in srv-c's kernel: routes move before the session notices"
 scn_K3() {
     allow_flap srv-c
-    trap 'on srv-c ip route del unreachable '"$R1"'/32 2>/dev/null || true; srv_c_use herald.toml' EXIT
+    trap 'on srv-c ip route del unreachable '"$R1"'/32 2>/dev/null || true; srv_c_use ansage.toml' EXIT
     k_start k3
     local start t
     start=$(now)
@@ -98,7 +98,7 @@ scn_K3() {
     t=$(elapsed "$start")
     measure "kernel route moved after next hop became unreachable" "$t"
     assert_le "next hop change noticed (event + 100 ms debounce)" "$t" 1.5
-    herald_established srv-c "$R1" || fail "the session to r1 was already down: nothing to show"
+    ansage_established srv-c "$R1" || fail "the session to r1 was already down: nothing to show"
     # Every path to user1's network leads to r1: none usable.
     wait_until 2 k_absent 10.201.1.0/24 || fail "user1's network still in the kernel"
     jq -e --arg r1 "$R1" '.next_hops[] | select(.address == $r1) | .via == null' <<<"$(fib_json)" >/dev/null ||
@@ -107,24 +107,24 @@ scn_K3() {
     wait_until 5 k_via_is 192.0.2.0/24 "$R1" || fail "192.0.2.0/24 did not move back to r1"
 }
 
-scenario K4 default - "herald upgrade keeps the kernel routes: no gap, then taken over"
+scenario K4 default - "ansage upgrade keeps the kernel routes: no gap, then taken over"
 scn_K4() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     k_start k4 top="graceful_restart = true"
     local before pid out min=100000 n
     before=$(k_count)
-    pid=$(herald_pid srv-c)
-    on srv-c herald upgrade --binary /usr/local/bin/herald >"$RUN_DIR/$SCN_ID.upgrade" 2>&1 &
+    pid=$(ansage_pid srv-c)
+    on srv-c ansage upgrade --binary /usr/local/bin/ansage >"$RUN_DIR/$SCN_ID.upgrade" 2>&1 &
     local up=$!
-    # Count herald's kernel routes while the upgrade runs.
+    # Count ansage's kernel routes while the upgrade runs.
     while kill -0 "$up" 2>/dev/null; do
         n=$(k_count)
         [ "$n" -lt "$min" ] && min=$n
         sleep 0.1
     done
-    wait "$up" || fail "herald upgrade failed: $(cat "$RUN_DIR/$SCN_ID.upgrade")"
-    [ "$(herald_pid srv-c)" != "$pid" ] || fail "herald was not restarted"
+    wait "$up" || fail "ansage upgrade failed: $(cat "$RUN_DIR/$SCN_ID.upgrade")"
+    [ "$(ansage_pid srv-c)" != "$pid" ] || fail "ansage was not restarted"
     log "kernel routes before: $before, fewest during the upgrade: $min"
     [ "$min" -ge "$before" ] || fail "kernel routes went missing during the upgrade ($min of $before)"
     wait_log srv-c "" 'neighbors in sync' 10
@@ -132,18 +132,18 @@ scn_K4() {
     jq -e '.adopted == 0' <<<"$(fib_json)" >/dev/null || fail "adopted routes left: $(fib_json)"
 }
 
-scenario K5 default - "stop: herald removes its kernel routes"
+scenario K5 default - "stop: ansage removes its kernel routes"
 scn_K5() {
     allow_flap srv-c
     # Back to both sessions up before the next scenario: after the Cease,
     # r2 (BIRD) can still close a fresh connection while it settles.
-    trap 'srv_c_use herald.toml
+    trap 'srv_c_use ansage.toml
         wait_until 20 frr_established r1 10.201.0.10
         wait_until 20 bird_established r2 srv_c' EXIT
     K_STAY=1 k_start k5
     [ "$(k_count)" -gt 0 ] || fail "no kernel routes to begin with"
-    on srv-c pkill -TERM -x herald
-    wait_until 10 k_herald_gone
+    on srv-c pkill -TERM -x ansage
+    wait_until 10 k_ansage_gone
     [ "$(k_count)" = 0 ] || fail "kernel routes left after the stop: $(on srv-c ip route show proto bgp)"
     [ -z "$(on srv-c ip nexthop show)" ] || fail "nexthop objects left: $(on srv-c ip nexthop show)"
 }

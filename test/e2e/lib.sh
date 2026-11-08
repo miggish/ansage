@@ -1,4 +1,4 @@
-# Helpers for the herald e2e tests, sourced by run.sh.
+# Helpers for the ansage e2e tests, sourced by run.sh.
 # Helpers take container names and addresses as
 # arguments (no hardcoded r1/r2), so the network can grow later.
 
@@ -6,10 +6,10 @@ E2E_ENGINE=${E2E_ENGINE:-docker}
 E2E_DIR=${E2E_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 E2E_COMPOSE_FILE=${E2E_COMPOSE_FILE:-$E2E_DIR/compose.yaml}
 # Compose project = one copy of the network (`just e2e-up` starts E2E_JOBS of
-# them, herald-e2e-1..N, all with the same addresses).
-E2E_PROJECT=${E2E_PROJECT:-herald-e2e-1}
+# them, ansage-e2e-1..N, all with the same addresses).
+E2E_PROJECT=${E2E_PROJECT:-ansage-e2e-1}
 
-# All containers of the network, routers, herald servers.
+# All containers of the network, routers, ansage servers.
 NODES=(r1 r2 srv-a srv-b srv-c user1 user2 rogue)
 SERVERS=(srv-a srv-b srv-c)
 
@@ -255,45 +255,45 @@ bird_rib() {
         END { flush() }' | sort
 }
 
-# --- herald ------------------------------------------------------------------
+# --- ansage ------------------------------------------------------------------
 
-herald_pid() { on "$1" pidof herald; }
+ansage_pid() { on "$1" pidof ansage; }
 
-# "fds rss_kib" of the herald process in a server container.
-herald_resources() {
-    on_sh "$1" 'p=$(pidof herald) && echo $(ls /proc/$p/fd | wc -l) $(awk "/^VmRSS/ { print \$2 }" /proc/$p/status)'
+# "fds rss_kib" of the ansage process in a server container.
+ansage_resources() {
+    on_sh "$1" 'p=$(pidof ansage) && echo $(ls /proc/$p/fd | wc -l) $(awk "/^VmRSS/ { print \$2 }" /proc/$p/status)'
 }
 
-# herald's own view over its control socket: herald_show SERVER ARGS...
-# prints the JSON reply of `herald show ARGS`, e.g. herald_show srv-c rib 10.201.1.0/24.
-herald_show() {
+# ansage's own view over its control socket: ansage_show SERVER ARGS...
+# prints the JSON reply of `ansage show ARGS`, e.g. ansage_show srv-c rib 10.201.1.0/24.
+ansage_show() {
     local server=$1
     shift
-    on "$server" herald show --json "$@"
+    on "$server" ansage show --json "$@"
 }
 
-# One field of herald's view of NEIGHBOR (ID or address): jq filter on the
-# `show peer` object, e.g. herald_peer srv-a 10.201.11.2 .status.backoff_ms.
-herald_peer() { herald_show "$1" peer "$2" | jq -r ".[0]$3"; }
+# One field of ansage's view of NEIGHBOR (ID or address): jq filter on the
+# `show peer` object, e.g. ansage_peer srv-a 10.201.11.2 .status.backoff_ms.
+ansage_peer() { ansage_show "$1" peer "$2" | jq -r ".[0]$3"; }
 
-herald_state() { herald_peer "$1" "$2" .status.state; }
-herald_established() { [ "$(herald_state "$1" "$2")" = Established ]; }
+ansage_state() { ansage_peer "$1" "$2" .status.state; }
+ansage_established() { [ "$(ansage_state "$1" "$2")" = Established ]; }
 
-# Routes herald stores from NEIGHBOR: "v4 v6" ("- -" while the session is down).
-herald_received() {
-    herald_peer "$1" "$2" '.rib | if . == null then "- -" else "\(.received_ipv4) \(.received_ipv6)" end'
+# Routes ansage stores from NEIGHBOR: "v4 v6" ("- -" while the session is down).
+ansage_received() {
+    ansage_peer "$1" "$2" '.rib | if . == null then "- -" else "\(.received_ipv4) \(.received_ipv6)" end'
 }
 
-# Normalized candidates herald has for PREFIX: "source as_path next_hop best" per
+# Normalized candidates ansage has for PREFIX: "source as_path next_hop best" per
 # route, best first.
-herald_routes() {
-    herald_show "$1" rib "$2" | jq -r '.routes[] |
+ansage_routes() {
+    ansage_show "$1" rib "$2" | jq -r '.routes[] |
         [.source, ([.as_path[].asns[]] | map(tostring) | join(",") | if . == "" then "-" else . end),
          (.next_hop // "-"), (if .best then "best" else "-" end)] | join(" ")'
 }
 
-# herald logs of a server since a timestamp (RFC 3339 or unix time).
-herald_logs() {
+# ansage logs of a server since a timestamp (RFC 3339 or unix time).
+ansage_logs() {
     local since=${2:-} c
     c=$(cname "$1") || return 1
     "$E2E_ENGINE" logs ${since:+--since "$since"} "$c" 2>&1
@@ -301,10 +301,10 @@ herald_logs() {
 
 # assert_log SERVER SINCE REGEX: the log since SINCE must contain REGEX.
 assert_log() {
-    herald_logs "$1" "$2" | grep -E "$3" >/dev/null || fail "$1: log has no line matching '$3'"
+    ansage_logs "$1" "$2" | grep -E "$3" >/dev/null || fail "$1: log has no line matching '$3'"
 }
 
-log_has() { herald_logs "$1" "$2" | grep -E "$3" >/dev/null; }
+log_has() { ansage_logs "$1" "$2" | grep -E "$3" >/dev/null; }
 
 # wait_log SERVER SINCE REGEX [TIMEOUT]: waits until the log since SINCE has REGEX.
 wait_log() { wait_until "${4:-10}" log_has "$1" "$2" "$3"; }
@@ -330,7 +330,7 @@ frr_log() { on "$1" tail -n +"$((${2:-0} + 1))" /tmp/frr.log; }
 frr_log_has() { frr_log "$1" "$2" | grep -E "$3" >/dev/null; }
 
 # BIRD logs to stderr: container logs since a timestamp.
-bird_log() { herald_logs "$1" "$2"; }
+bird_log() { ansage_logs "$1" "$2"; }
 bird_log_has() { bird_log "$1" "$2" | grep -E "$3" >/dev/null; }
 
 # --- probes ------------------------------------------------------------------
@@ -444,7 +444,7 @@ srv_c_gen_dir() {
     printf '%s' "$E2E_DIR/config/srv-c/gen/$E2E_PROJECT"
 }
 
-# srv_c_use FILE: recreates srv-c with config/srv-c/FILE (herald.toml = default;
+# srv_c_use FILE: recreates srv-c with config/srv-c/FILE (ansage.toml = default;
 # gen-* files from srv_c_conf are taken from this copy's directory).
 srv_c_use() {
     local f=$1

@@ -1,5 +1,5 @@
 # G: graceful restart. srv-c with graceful_restart = true, under a
-# supervisor that starts herald again after exit 75 (HERALD_SUPERVISED, like
+# supervisor that starts ansage again after exit 75 (ANSAGE_SUPERVISED, like
 # systemd RestartForceExitStatus=75). srv-c is the only server for
 # 198.51.100.0/24 / 2001:db8:2::/48: if a router dropped its routes, traffic
 # from user1 (via r1, FRR) and user2 (via r2, BIRD) would stop.
@@ -53,34 +53,34 @@ g_probes_gap() {
     echo "$max"
 }
 
-scenario G1 default - "herald upgrade: routers keep srv-c's routes, no traffic lost, exit 0"
+scenario G1 default - "ansage upgrade: routers keep srv-c's routes, no traffic lost, exit 0"
 scn_G1() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     g_start g1
     local n
     for n in 10.201.0.2 10.201.0.3; do
-        [ "$(herald_peer srv-c "$n" '.status.session.graceful_restart != null')" = true ] ||
+        [ "$(ansage_peer srv-c "$n" '.status.session.graceful_restart != null')" = true ] ||
             fail "srv-c: no graceful restart negotiated with $n"
     done
-    log "N bit with r1: $(herald_peer srv-c 10.201.0.2 .status.session.graceful_restart.notification), r2: $(herald_peer srv-c 10.201.0.3 .status.session.graceful_restart.notification)"
+    log "N bit with r1: $(ansage_peer srv-c 10.201.0.2 .status.session.graceful_restart.notification), r2: $(ansage_peer srv-c 10.201.0.3 .status.session.graceful_restart.notification)"
 
     # Dry run: both keep our routes, nothing refused.
     local plan
-    plan=$(on srv-c herald upgrade --dry-run --json) || fail "dry run failed: $plan"
+    plan=$(on srv-c ansage upgrade --dry-run --json) || fail "dry run failed: $plan"
     jq -e '(.neighbors | map(.action) | all(startswith("keep"))) and (.refused == [])' <<<"$plan" >/dev/null ||
         fail "unexpected dry run: $plan"
 
     local pid mark start out gap
-    pid=$(herald_pid srv-c)
+    pid=$(ansage_pid srv-c)
     mark=$(frr_log_mark r1)
     g_probes_start g1
     start=$(now)
-    out=$(on srv-c herald upgrade --binary /usr/local/bin/herald 2>&1) || fail "herald upgrade failed:
+    out=$(on srv-c ansage upgrade --binary /usr/local/bin/ansage 2>&1) || fail "ansage upgrade failed:
 $out"
     measure "upgrade until all neighbors back" "$(elapsed "$start")"
     info "${out//$'\n'/$'\n'    }"
-    [ "$(herald_pid srv-c)" != "$pid" ] || fail "herald was not restarted"
+    [ "$(ansage_pid srv-c)" != "$pid" ] || fail "ansage was not restarted"
     gap=$(g_probes_gap g1)
     assert_le "traffic gap during the upgrade" "$gap" 0.5
     g_routes_at_both || fail "a router lost srv-c's prefixes after the upgrade"
@@ -90,7 +90,7 @@ $out"
 scenario G2 default - "stop with graceful restart: Hard Reset (N bit) or Cease, routers withdraw at once"
 scn_G2() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     g_start g2
     local mark start t
     mark=$(frr_log_mark r1)
@@ -105,13 +105,13 @@ scn_G2() {
         fail "r1 did not log a Hard Reset wrapping 6/2: $(frr_log r1 "$mark" | grep NOTIFICATION)"
 }
 
-scenario G3 default - "kill -9: routers keep the routes as stale, until herald is back or restart_time"
+scenario G3 default - "kill -9: routers keep the routes as stale, until ansage is back or restart_time"
 scn_G3() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     G_TOP='restart_time = 6' g_start g3
     local start t
-    on srv-c pkill -9 -x herald
+    on srv-c pkill -9 -x ansage
     # The supervisor only restarts after exit 75: srv-c stops, nobody is
     # back within restart_time.
     start=$(now)
@@ -128,12 +128,12 @@ scenario G4 default - "panic: the hook sends a Cease (Hard Reset with N), router
 scn_G4() {
     allow_flap srv-c
     allow_warn srv-c 'panicked|crash requested'
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     g_start g4
     local mark start t
     mark=$(frr_log_mark r1)
     start=$(now)
-    on srv-c herald debug-crash >/dev/null 2>&1 || true
+    on srv-c ansage debug-crash >/dev/null 2>&1 || true
     wait_until 3 g_routes_at_none || fail "routers kept srv-c's routes after a panic"
     t=$(elapsed "$start")
     measure "withdrawn after panic" "$t"
@@ -146,35 +146,35 @@ scn_G4() {
 scenario G5 default - "upgrade refused: a neighbor without graceful restart would withdraw"
 scn_G5() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     g_start g5 r2_extra='graceful_restart = false'
     local pid out
-    pid=$(herald_pid srv-c)
-    if out=$(on srv-c herald upgrade 2>&1); then fail "upgrade not refused: $out"; fi
+    pid=$(ansage_pid srv-c)
+    if out=$(on srv-c ansage upgrade 2>&1); then fail "upgrade not refused: $out"; fi
     [[ $out == *"would withdraw our routes: 10.201.0.3:179"* ]] || fail "unexpected refusal: $out"
-    [ "$(herald_pid srv-c)" = "$pid" ] || fail "herald restarted anyway"
+    [ "$(ansage_pid srv-c)" = "$pid" ] || fail "ansage restarted anyway"
     # A bad binary is refused before anything happens.
-    if out=$(on srv-c herald upgrade --force --binary /bin/false 2>&1); then fail "bad binary accepted: $out"; fi
-    [ "$(herald_pid srv-c)" = "$pid" ] || fail "herald restarted with a bad binary"
+    if out=$(on srv-c ansage upgrade --force --binary /bin/false 2>&1); then fail "bad binary accepted: $out"; fi
+    [ "$(ansage_pid srv-c)" = "$pid" ] || fail "ansage restarted with a bad binary"
 }
 
 scenario G6 default - "upgrade with no neighbor to wait for: waits for the new process, exit 0"
 scn_G6() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml' EXIT
+    trap 'srv_c_use ansage.toml' EXIT
     g_start g6
     local n pid out
     for n in 10.201.0.2 10.201.0.3; do
-        on srv-c herald peer "$n" disable >/dev/null || fail "cannot disable $n"
+        on srv-c ansage peer "$n" disable >/dev/null || fail "cannot disable $n"
     done
     wait_until 5 g_routes_at_none || fail "routers kept srv-c's routes after disable"
-    pid=$(herald_pid srv-c)
+    pid=$(ansage_pid srv-c)
     # Before the fix, upgrade returned at once ("did not come back").
-    out=$(on srv-c herald upgrade --timeout 15 2>&1) || fail "herald upgrade failed:
+    out=$(on srv-c ansage upgrade --timeout 15 2>&1) || fail "ansage upgrade failed:
 $out"
     info "${out//$'\n'/$'\n'    }"
-    [[ $out == *"herald is back after"* && $out == *"Upgrade done"* ]] || fail "unexpected output: $out"
-    [ "$(herald_pid srv-c)" != "$pid" ] || fail "herald was not restarted"
+    [[ $out == *"ansage is back after"* && $out == *"Upgrade done"* ]] || fail "unexpected output: $out"
+    [ "$(ansage_pid srv-c)" != "$pid" ] || fail "ansage was not restarted"
     # Runtime disable is not persistent: the new process connects again.
     wait_until 20 g_routes_at_both || fail "routers do not have srv-c's prefixes after the upgrade"
 }
@@ -186,24 +186,24 @@ g_metric() {
     on srv-c wget -qO- http://127.0.0.1:9179/metrics |
         awk -v m="$1{neighbor=\"$2:179\"" 'index($0, m) == 1 { print $2 }'
 }
-g_r1_stale() { [ "$(g_metric herald_peer_prefixes_stale 10.201.0.2)" = "$1" ]; }
-g_r1_received() { [ "$(herald_received srv-c 10.201.0.2)" = "$1" ]; }
+g_r1_stale() { [ "$(g_metric ansage_peer_prefixes_stale 10.201.0.2)" = "$1" ]; }
+g_r1_received() { [ "$(ansage_received srv-c 10.201.0.2)" = "$1" ]; }
 
 scenario G7 default - "helper: r1 (FRR, full GR) drops the session without Cease, srv-c keeps its routes stale until refreshed"
 scn_G7() {
     allow_flap srv-c
     allow_warn srv-c 'session down'
-    trap 'on srv-c ip route del blackhole 10.201.0.2/32 >/dev/null 2>&1 || true; frr_conf r1 "router bgp 64510" "no neighbor 10.201.0.10 graceful-restart" "no bgp graceful-restart preserve-fw-state" >/dev/null; srv_c_use herald.toml' EXIT
+    trap 'on srv-c ip route del blackhole 10.201.0.2/32 >/dev/null 2>&1 || true; frr_conf r1 "router bgp 64510" "no neighbor 10.201.0.10 graceful-restart" "no bgp graceful-restart preserve-fw-state" >/dev/null; srv_c_use ansage.toml' EXIT
     # r1 restarting-capable towards srv-c, with the F bit (FRR resets the session).
     frr_conf r1 'router bgp 64510' 'bgp graceful-restart preserve-fw-state' 'neighbor 10.201.0.10 graceful-restart' >/dev/null
     G_TOP='metrics_listen = "127.0.0.1:9179"' g_start g7
-    wait_until 10 eval '[ "$(herald_peer srv-c 10.201.0.2 .rib.initial_sync_done)" = true ]' || fail "no initial sync with r1"
+    wait_until 10 eval '[ "$(ansage_peer srv-c 10.201.0.2 .rib.initial_sync_done)" = true ]' || fail "no initial sync with r1"
     # r1's End-of-RIB for both families (srv-c was just recreated: whole log).
-    wait_until 10 eval '[ "$(herald_logs srv-c | grep -c "end of RIB from peer peer=1 ")" -ge 2 ]' ||
+    wait_until 10 eval '[ "$(ansage_logs srv-c | grep -c "end of RIB from peer peer=1 ")" -ge 2 ]' ||
         fail "no End-of-RIB from r1 for both families"
 
     local gr
-    gr=$(herald_peer srv-c 10.201.0.2 .status.session.graceful_restart)
+    gr=$(ansage_peer srv-c 10.201.0.2 .status.session.graceful_restart)
     log "graceful restart with r1: $(jq -c . <<<"$gr")"
     # The N bit makes r1's hold-timer NOTIFICATION keep the routes. The F bit
     # (FRR sets it only sometimes, also with preserve-fw-state) only decides
@@ -211,53 +211,53 @@ scn_G7() {
     # both end with the same routes and no stale ones.
     jq -e '.notification' <<<"$gr" >/dev/null || fail "r1: no N bit: $gr"
     local m
-    for m in herald_peer_graceful_restart herald_peer_graceful_restart_notification \
-        herald_peer_graceful_restart_offered herald_peer_graceful_restart_enabled; do
+    for m in ansage_peer_graceful_restart ansage_peer_graceful_restart_notification \
+        ansage_peer_graceful_restart_offered ansage_peer_graceful_restart_enabled; do
         [ "$(g_metric $m 10.201.0.2)" = 1 ] || fail "metric $m for r1 is not 1"
     done
     g_r1_stale 0 || fail "stale routes before anything happened"
 
     local rcvd n start t
-    rcvd=$(herald_received srv-c 10.201.0.2)
+    rcvd=$(ansage_received srv-c 10.201.0.2)
     n=$(awk '{ print $1 + $2 }' <<<"$rcvd")
     [ "$n" -gt 0 ] || fail "srv-c has no routes from r1"
     # srv-c's packets to r1 vanish: r1's hold timer expires and it sends a
     # NOTIFICATION (not a Hard Reset), which srv-c still receives.
     on srv-c ip route add blackhole 10.201.0.2/32 || fail "cannot add the blackhole"
     start=$(now)
-    wait_until 15 eval '! herald_established srv-c 10.201.0.2' || fail "session with r1 did not go down"
+    wait_until 15 eval '! ansage_established srv-c 10.201.0.2' || fail "session with r1 did not go down"
     measure "session down after blackhole" "$(elapsed "$start")"
-    log "last down: $(herald_peer srv-c 10.201.0.2 .status.last_down | jq -c .)"
-    wait_until 3 g_r1_stale "$n" || fail "srv-c did not keep r1's $n routes as stale (metric: $(g_metric herald_peer_prefixes_stale 10.201.0.2))"
+    log "last down: $(ansage_peer srv-c 10.201.0.2 .status.last_down | jq -c .)"
+    wait_until 3 g_r1_stale "$n" || fail "srv-c did not keep r1's $n routes as stale (metric: $(g_metric ansage_peer_prefixes_stale 10.201.0.2))"
     log_has srv-c "$start" 'routes kept as stale' || fail "no 'kept as stale' log"
     local p
-    p=$(herald_show srv-c rib --json | jq -r '[.[] | select(.source != "local")][0].prefix // empty' 2>/dev/null || true)
+    p=$(ansage_show srv-c rib --json | jq -r '[.[] | select(.source != "local")][0].prefix // empty' 2>/dev/null || true)
     [ -z "$p" ] || log "a kept route: $p"
 
     on srv-c ip route del blackhole 10.201.0.2/32
     start=$(now)
-    wait_until 20 herald_established srv-c 10.201.0.2 || fail "r1 did not come back"
-    wait_until 10 g_r1_stale 0 || fail "stale routes left after r1's End-of-RIB: $(g_metric herald_peer_prefixes_stale 10.201.0.2)"
+    wait_until 20 ansage_established srv-c 10.201.0.2 || fail "r1 did not come back"
+    wait_until 10 g_r1_stale 0 || fail "stale routes left after r1's End-of-RIB: $(g_metric ansage_peer_prefixes_stale 10.201.0.2)"
     measure "back and refreshed" "$(elapsed "$start")"
-    g_r1_received "$rcvd" || fail "r1's routes after the refresh: $(herald_received srv-c 10.201.0.2), before: $rcvd"
+    g_r1_received "$rcvd" || fail "r1's routes after the refresh: $(ansage_received srv-c 10.201.0.2), before: $rcvd"
 }
 
-scenario G8 default - "BIRD with graceful restart on (as in the docs): keeps srv-c's routes through herald upgrade"
+scenario G8 default - "BIRD with graceful restart on (as in the docs): keeps srv-c's routes through ansage upgrade"
 scn_G8() {
     allow_flap srv-c
-    trap 'srv_c_use herald.toml; bird_restore r2' EXIT
+    trap 'srv_c_use ansage.toml; bird_restore r2' EXIT
     # G1 covers BIRD's default (aware); this is the explicit line from
     # website/content/docs/guides/router-config.mdx.
     bird_use r2 '/^protocol bgp srv_c/,/^}/s/passive on;/passive on;\n    graceful restart on;/'
     g_start g8
-    [ "$(herald_peer srv-c 10.201.0.3 '.status.session.graceful_restart != null')" = true ] ||
+    [ "$(ansage_peer srv-c 10.201.0.3 '.status.session.graceful_restart != null')" = true ] ||
         fail "srv-c: no graceful restart negotiated with r2"
     local pid out gap
-    pid=$(herald_pid srv-c)
+    pid=$(ansage_pid srv-c)
     g_probes_start g8
-    out=$(on srv-c herald upgrade --binary /usr/local/bin/herald 2>&1) || fail "herald upgrade failed:
+    out=$(on srv-c ansage upgrade --binary /usr/local/bin/ansage 2>&1) || fail "ansage upgrade failed:
 $out"
-    [ "$(herald_pid srv-c)" != "$pid" ] || fail "herald was not restarted"
+    [ "$(ansage_pid srv-c)" != "$pid" ] || fail "ansage was not restarted"
     gap=$(g_probes_gap g8)
     assert_le "traffic gap during the upgrade" "$gap" 0.5
     g_routes_at_both || fail "a router lost srv-c's prefixes after the upgrade"
