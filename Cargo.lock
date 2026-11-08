@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "ansage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ansage-bgp",
  "ansage-netlink",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "ansage-bgp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "ansage-netlink"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ansage-bgp",
  "clap",

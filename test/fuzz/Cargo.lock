@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ansage-bgp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "thiserror",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "ansage-netlink"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ansage-bgp",
  "libc",

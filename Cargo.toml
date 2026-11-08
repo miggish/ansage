@@ -3,15 +3,15 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ansage Contributors"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/miggish/ansage"
 
 [workspace.dependencies]
-ansage-bgp = { path = "crates/ansage-bgp", version = "0.1.0" }
-ansage-netlink = { path = "crates/ansage-netlink", version = "0.1.0" }
+ansage-bgp = { path = "crates/ansage-bgp" }
+ansage-netlink = { path = "crates/ansage-netlink" }
 
 bytes = "1.12"
 clap = { version = "4.6", features = ["derive"] }
