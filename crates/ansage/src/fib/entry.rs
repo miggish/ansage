@@ -114,8 +114,9 @@ impl Gateway {
     pub fn new(addr: IpAddr, link_local: Option<Ipv6Addr>, oif: Option<u32>) -> Self {
         let link_local = match addr {
             IpAddr::V6(a) if a.is_unicast_link_local() => Some(a),
+            // Also for IPv4 routes with an IPv6 next hop (RFC 8950).
             IpAddr::V6(_) => link_local,
-            // Not for IPv4 routes (that would be RFC 8950 forwarding).
+            // A link-local IPv6 address is no fallback for an IPv4 next hop.
             IpAddr::V4(_) => None,
         };
         Self {

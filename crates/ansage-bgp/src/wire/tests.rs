@@ -11,11 +11,13 @@ const NEG4: Negotiated = Negotiated {
     four_octet_as: true,
     extended_message: false,
     ibgp: false,
+    extended_next_hop: false,
 };
 const NEG2: Negotiated = Negotiated {
     four_octet_as: false,
     extended_message: false,
     ibgp: false,
+    extended_next_hop: false,
 };
 
 fn hex(s: &str) -> Vec<u8> {
@@ -529,6 +531,7 @@ fn message_too_long() {
         four_octet_as: true,
         extended_message: true,
         ibgp: false,
+        extended_next_hop: false,
     };
     assert_eq!(
         decode(&encode(&message, &extended), &extended).unwrap(),
@@ -795,7 +798,8 @@ fn open_graceful_restart() {
     };
     roundtrip(&bytes, &NEG2, Message::Open(open));
 
-    // No families (helper only, RFC 4724 §3), no flags; reserved flag bits ignored.
+    // No families (helper only, RFC 4724 §3), no flags; reserved flag bits
+    // ignored.
     let Message::Open(open) = decode(
         &msg("0023 01 04 fbf5 005a c0000202 06 02 04 40 02 1000"),
         &NEG2,
@@ -872,4 +876,110 @@ fn notification_hard_reset() {
         &NEG4,
         Message::Notification(hard),
     );
+}
+
+#[test]
+fn open_extended_next_hop() {
+    // RFC 8950 §3: IPv4 (0001) unicast (0001, 2 octets) over IPv6 (0002).
+    let bytes = msg("0027 01 04 fbf5 005a c0000202 0a 02 08 05 06 0001 0001 0002");
+    let open = Open {
+        my_as: 64501,
+        hold_time: 90,
+        bgp_id: Ipv4Addr::new(192, 0, 2, 2),
+        capabilities: vec![Capability::ExtendedNextHop(vec![
+            ExtendedNextHop::IPV4_UNICAST_OVER_IPV6,
+        ])],
+    };
+    roundtrip(&bytes, &NEG4, Message::Open(open));
+
+    // An entry with a SAFI over 8 bits is skipped, the others are kept.
+    let Message::Open(open) = decode(
+        &msg("002d 01 04 fbf5 005a c0000202 10 02 0e 05 0c 0001 0100 0002 0001 0001 0002"),
+        &NEG4,
+    )
+    .unwrap() else {
+        panic!("not an OPEN");
+    };
+    assert_eq!(
+        open.capabilities,
+        [Capability::ExtendedNextHop(vec![
+            ExtendedNextHop::IPV4_UNICAST_OVER_IPV6
+        ])]
+    );
+
+    // A partial entry is malformed.
+    let err = decode(
+        &msg("0025 01 04 fbf5 005a c0000202 08 02 06 05 04 0001 0001"),
+        &NEG4,
+    )
+    .unwrap_err();
+    assert_eq!(err, DecodeError::MalformedOpen);
+}
+
+/// MP_REACH for IPv4 unicast with next hop 2001:db8::1 and NLRI
+/// 198.51.100.0/24; ORIGIN IGP, AS_PATH [64500].
+const IPV4_OVER_IPV6: &str = "0040 02 0000 0029
+    80 0e 19 0001 01 10 20010db8000000000000000000000001 00 18 c63364
+    40 01 01 00
+    40 02 06 02 01 0000fbf4";
+
+#[test]
+fn update_ipv4_with_ipv6_next_hop() {
+    let neg = Negotiated {
+        extended_next_hop: true,
+        ..NEG4
+    };
+    let update = Update {
+        attrs: vec![
+            PathAttr::Origin(Origin::Igp),
+            PathAttr::AsPath(AsPath::sequence([64500])),
+        ],
+        mp_reach: Some(MpReach {
+            afi: Afi::IPV4,
+            safi: Safi::UNICAST,
+            next_hop: NextHop::V6 {
+                global: "2001:db8::1".parse::<Ipv6Addr>().unwrap(),
+                link_local: None,
+            },
+            nlri: vec![Prefix::V4(p4("198.51.100.0/24"))],
+        }),
+        ..Update::default()
+    };
+    roundtrip(&msg(IPV4_OVER_IPV6), &neg, Message::Update(update));
+
+    // Global and link-local next hop (RFC 8950 §3, as RFC 2545).
+    let Message::Update(update) = decode(
+        &msg("0050 02 0000 0039
+              80 0e 29 0001 01 20 20010db8000000000000000000000001
+                                 fe800000000000000000000000000001 00 18 c63364
+              40 01 01 00
+              40 02 06 02 01 0000fbf4"),
+        &neg,
+    )
+    .unwrap() else {
+        panic!("not an UPDATE");
+    };
+    assert_eq!(
+        update.mp_reach.unwrap().next_hop,
+        NextHop::V6 {
+            global: "2001:db8::1".parse().unwrap(),
+            link_local: Some("fe80::1".parse().unwrap()),
+        }
+    );
+
+    // Not agreed: the next-hop length does not fit the family, so the NLRI
+    // cannot be located (RFC 7606 §7.11, session reset).
+    let err = decode(&msg(IPV4_OVER_IPV6), &NEG4).unwrap_err();
+    let mp = hex("800e19 0001 01 10 20010db8000000000000000000000001 00 18 c63364");
+    assert_eq!(err, DecodeError::OptionalAttribute(Bytes::from(mp)));
+
+    // An IPv4 next hop for IPv6 routes stays invalid either way.
+    let err = decode(
+        &msg(&format!(
+            "0030 02 0000 0019 800e09 0002 01 04 c0000201 00 40010100 {AS_PATH}"
+        )),
+        &neg,
+    )
+    .unwrap_err();
+    assert!(matches!(err, DecodeError::OptionalAttribute(_)));
 }

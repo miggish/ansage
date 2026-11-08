@@ -57,6 +57,7 @@ fn up(peer: SourceId, asn: u32) -> (RibMsg, mpsc::Receiver<PeerMsg>) {
             four_octet_as: true,
             extended_message: false,
             ibgp: asn == LOCAL_ASN,
+            extended_next_hop: false,
         },
         families: vec![(Afi::IPV4, Safi::UNICAST), (Afi::IPV6, Safi::UNICAST)],
         route_refresh: true,
@@ -347,6 +348,7 @@ fn encoded_batch_decodes_back() {
         four_octet_as: true,
         extended_message: false,
         ibgp: false,
+        extended_next_hop: false,
     };
     let mut buf = BytesMut::from(&encode_batch(&batch, &neg).unwrap()[..]);
     let mut updates = Vec::new();
@@ -1542,4 +1544,115 @@ fn settings_from_config() {
     assert_eq!(rib.install_families, [false, true]);
     assert!(rib.peers[&1].install);
     assert!(!rib.peers[&2].install);
+}
+
+/// A session over IPv6 without `next_hop_ipv4`: only an IPv6 next hop
+/// (2001:db8::1, see `up`), and RFC 8950 agreed or not.
+fn up_ipv6_only(peer: SourceId, extended_next_hop: bool) -> (RibMsg, mpsc::Receiver<PeerMsg>) {
+    let (msg, rx) = up(peer, 64500 + u32::from(peer));
+    let RibMsg::Up(mut up) = msg else {
+        unreachable!()
+    };
+    up.addr = format!("2001:db8::{peer:x}0").parse().unwrap();
+    up.local_addr = IpAddr::V6("2001:db8::1".parse().unwrap());
+    up.next_hop_ipv4 = None;
+    up.info.negotiated.extended_next_hop = extended_next_hop;
+    (RibMsg::Up(up), rx)
+}
+
+fn learned_v4_via(next_hop: NextHop, prefix: &str) -> Update {
+    let mut update = learned_v6(next_hop, prefix);
+    update.mp_reach.as_mut().unwrap().afi = Afi::IPV4;
+    update
+}
+
+#[test]
+fn ipv4_goes_out_with_the_ipv6_next_hop_when_agreed() {
+    let mut rib = rib(None);
+    let (msg, _rx) = up_ipv6_only(1, true);
+    let batch = exports(run(&mut rib, vec![msg]), 1).remove(0);
+    let [group] = &batch.announce[..] else {
+        panic!("one attribute set: {:#?}", batch.announce);
+    };
+    let mut prefixes = group.prefixes.clone();
+    prefixes.sort();
+    assert_eq!(prefixes, [p("192.0.2.0/24"), p("2001:db8:1::/48")]);
+    assert!(
+        !group
+            .attrs
+            .iter()
+            .any(|a| a.type_code() == type_code::NEXT_HOP)
+    );
+
+    // On the wire: IPv4 in MP_REACH with the IPv6 next hop.
+    let neg = Negotiated {
+        four_octet_as: true,
+        extended_next_hop: true,
+        ..Negotiated::default()
+    };
+    let mut buf = BytesMut::from(&encode_batch(&batch, &neg).unwrap()[..]);
+    let mut reach = Vec::new();
+    while let Some((kind, body)) = split_message(&mut buf, 4096).unwrap() {
+        let Message::Update(update) = Message::decode(kind, body, &neg).unwrap() else {
+            panic!("not an UPDATE");
+        };
+        assert!(update.nlri.is_empty());
+        reach.extend(update.mp_reach.map(|m| (m.afi, m.next_hop)));
+    }
+    let v6 = NextHop::V6 {
+        global: "2001:db8::1".parse().unwrap(),
+        link_local: None,
+    };
+    assert_eq!(reach, [(Afi::IPV4, v6), (Afi::IPV6, v6)]);
+}
+
+#[test]
+fn ipv4_is_not_announced_without_a_next_hop_for_it() {
+    let mut rib = rib(None);
+    let (msg, _rx) = up_ipv6_only(1, false);
+    let batch = exports(run(&mut rib, vec![msg]), 1).remove(0);
+    let prefixes: Vec<Prefix> = batch
+        .announce
+        .iter()
+        .flat_map(|a| a.prefixes.clone())
+        .collect();
+    assert_eq!(prefixes, [p("2001:db8:1::/48")]);
+}
+
+#[test]
+fn ipv4_routes_via_ipv6_next_hops_are_learned_and_installed() {
+    let (mut rib, rx) = rib_with_fib();
+    let (up1, _rx1) = up_on_link(1, 64501, 5);
+    let foreign = NextHop::V6 {
+        global: "2001:db8:ff::9".parse().unwrap(),
+        link_local: Some("fe80::9".parse().unwrap()),
+    };
+    // Our own IPv6 next hop on this session: not usable.
+    let ours = NextHop::V6 {
+        global: "2001:db8::1".parse().unwrap(),
+        link_local: None,
+    };
+    run(
+        &mut rib,
+        vec![
+            up1,
+            RibMsg::Update {
+                peer: 1,
+                update: learned_v4_via(foreign, "198.51.100.0/24"),
+            },
+            RibMsg::Update {
+                peer: 1,
+                update: learned_v4_via(ours, "203.0.113.0/24"),
+            },
+        ],
+    );
+    assert_eq!(rib.route_count(&p("203.0.113.0/24")), 0, "own next hop");
+    let gw = Gateway {
+        addr: "2001:db8:ff::9".parse().unwrap(),
+        link: Some(("fe80::9".parse().unwrap(), 5)),
+    };
+    assert_eq!(
+        fib_gateways(&mut rib, &rx),
+        [(p("198.51.100.0/24"), Some(gw))]
+    );
 }

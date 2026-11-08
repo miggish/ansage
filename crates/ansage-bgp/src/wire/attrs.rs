@@ -298,22 +298,29 @@ fn supported(afi: Afi, safi: Safi) -> bool {
 
 impl MpReach {
     /// `None` for an address family we do not support (attribute discard).
-    fn decode(value: Bytes, err: DecodeError) -> Result<Option<Self>, DecodeError> {
+    fn decode(
+        value: Bytes,
+        err: DecodeError,
+        neg: &Negotiated,
+    ) -> Result<Option<Self>, DecodeError> {
         let mut r = Reader::new(value, err);
         let afi = Afi(r.u16()?);
         let safi = Safi(r.u8()?);
         if !supported(afi, safi) {
             return Ok(None);
         }
+        // RFC 8950 §3: with the capability, IPv4 routes may have an IPv6
+        // next hop, encoded as for IPv6 routes (RFC 2545).
+        let v6_next_hop = afi == Afi::IPV6 || neg.extended_next_hop;
         // RFC 7606 §7.11: a next-hop length that does not fit the family
         // means the NLRI cannot be located reliably (session reset).
-        let next_hop = match (afi, r.u8()?) {
-            (Afi::IPV4, 4) => NextHop::V4(Ipv4Addr::from(r.u32()?)),
-            (Afi::IPV6, 16) => NextHop::V6 {
+        let next_hop = match r.u8()? {
+            4 if afi == Afi::IPV4 => NextHop::V4(Ipv4Addr::from(r.u32()?)),
+            16 if v6_next_hop => NextHop::V6 {
                 global: read_ipv6(&mut r)?,
                 link_local: None,
             },
-            (Afi::IPV6, 32) => NextHop::V6 {
+            32 if v6_next_hop => NextHop::V6 {
                 global: read_ipv6(&mut r)?,
                 link_local: Some(read_ipv6(&mut r)?),
             },
@@ -715,7 +722,7 @@ fn decode_value(
         }
         MP_REACH_NLRI => {
             let err = DecodeError::OptionalAttribute(raw);
-            return Ok(match MpReach::decode(r.rest(), err.clone())? {
+            return Ok(match MpReach::decode(r.rest(), err.clone(), neg)? {
                 Some(reach) => Decoded::MpReach(reach),
                 None => Decoded::Ignored(err),
             });
@@ -894,6 +901,7 @@ const CANONICAL: Negotiated = Negotiated {
     four_octet_as: true,
     extended_message: false,
     ibgp: true,
+    extended_next_hop: false,
 };
 
 /// Next-hop length and address(es) as in MP_REACH_NLRI.

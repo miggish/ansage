@@ -16,6 +16,7 @@ fuzz_target!(|data: &[u8]| {
             four_octet_as: true,
             extended_message: true,
             ibgp: false,
+            extended_next_hop: true,
         },
     ] {
         let mut buf = BytesMut::from(data);

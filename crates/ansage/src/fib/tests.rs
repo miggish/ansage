@@ -843,7 +843,56 @@ fn in_namespace() {
     assert_eq!(sh("ip nexthop show"), "");
 
     link_local_in_kernel(&mut fib);
+    ipv4_via_ipv6_in_kernel(&mut fib);
     recursive_and_events(fib);
+}
+
+/// RFC 8950: IPv4 routes through IPv6 next hops, global (sharing the
+/// nexthop object with an IPv6 route) and link-local only.
+fn ipv4_via_ipv6_in_kernel(fib: &mut Fib<Netlink>) {
+    fib.set_settings(SETTINGS);
+    let errors_before = fib.errors().clone();
+    sh("ip link add d3 type dummy
+        ip link set d3 up
+        ip -6 addr add fe80::c/64 dev d3 nodad");
+    let name = std::ffi::CString::new("d3").unwrap();
+    // SAFETY: a NUL-terminated name.
+    let d3 = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    let global = Gateway::from(a("2001:db8:ff::2"));
+    let link_only = Gateway::new(a("fe80::3"), None, Some(d3));
+    fib.update(&[
+        (p("198.51.100.0/24"), Some(global)),
+        (p("2001:db8:2::/48"), Some(global)),
+        (p("203.0.113.0/24"), Some(link_only)),
+    ]);
+    assert_eq!(*fib.errors(), errors_before);
+    let v4 = sh("ip route show proto bgp");
+    for (prefix, via) in [
+        ("198.51.100.0/24", "via inet6 2001:db8:ff::2 dev d0"),
+        ("203.0.113.0/24", "via inet6 fe80::3 dev d3"),
+    ] {
+        let line = v4.lines().find(|l| l.starts_with(prefix));
+        assert!(
+            line.is_some_and(|l| l.contains(via)),
+            "{prefix} {via}: {v4}"
+        );
+    }
+    let nexthops = sh("ip nexthop show");
+    assert_eq!(
+        nexthops.matches("2001:db8:ff::2").count(),
+        1,
+        "one nexthop object for both families: {nexthops}"
+    );
+
+    fib.update(&[
+        (p("198.51.100.0/24"), None::<Gateway>),
+        (p("2001:db8:2::/48"), None),
+        (p("203.0.113.0/24"), None),
+    ]);
+    assert_eq!(sh("ip route show proto bgp"), "");
+    sh("ip link del d3");
+    fib.refresh();
+    addrs(fib.take_reports());
 }
 
 /// Link-local next hops: one per interface, and as the fallback of a

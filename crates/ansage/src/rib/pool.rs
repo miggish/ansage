@@ -99,7 +99,7 @@ pub struct AttrPool {
 
 impl AttrPool {
     /// Interns `attrs` (sorted by type code, without MP attributes) plus the
-    /// MP next hop of IPv6 routes, taking one reference.
+    /// MP next hop of routes from MP_REACH_NLRI, taking one reference.
     pub fn intern(&mut self, attrs: &[PathAttr], mp_next_hop: Option<&NextHop>) -> AttrId {
         self.scratch.clear();
         // Our own attributes always fit; an oversized set from a peer could
@@ -193,16 +193,16 @@ impl AttrPool {
         Some(Gateway::new(addr, self.link_local(id), oif))
     }
 
-    /// The address a route with these attributes is forwarded to: NEXT_HOP
-    /// for IPv4 routes, the global MP next hop for IPv6 routes. None when
-    /// missing, and for an IPv4 next hop of an IPv6 route (RFC 8950), which
-    /// ansage does not install.
+    /// The address a route with these attributes is forwarded to. IPv4
+    /// routes: the MP next hop if they came in MP_REACH_NLRI (IPv4, or IPv6
+    /// with RFC 8950), else NEXT_HOP. IPv6 routes: the global MP next hop.
+    /// None when missing, and for an IPv4 next hop of an IPv6 route, which
+    /// the kernel cannot forward to.
     pub fn forwarding_next_hop(&self, id: AttrId, ipv6: bool) -> Option<IpAddr> {
-        let slot = self.slot(id);
         if !ipv6 {
-            return slot.summary.next_hop.map(IpAddr::V4);
+            return self.next_hop(id);
         }
-        match slot.mp_next_hop {
+        match self.slot(id).mp_next_hop {
             Some(NextHop::V6 { global, .. }) => Some(IpAddr::V6(global)),
             _ => None,
         }
@@ -335,11 +335,21 @@ mod tests {
             pool.forwarding_next_hop(v6, true),
             Some("2001:db8::1".parse().unwrap())
         );
-        assert_eq!(pool.forwarding_next_hop(v6, false), None, "no NEXT_HOP");
-        let rfc8950 = pool.intern(
-            &attrs(&[64502])[..2],
-            Some(&NextHop::V4(Ipv4Addr::LOCALHOST)),
+        // The same set for IPv4 routes: RFC 8950, IPv4 via an IPv6 next hop.
+        assert_eq!(
+            pool.forwarding_next_hop(v6, false),
+            Some("2001:db8::1".parse().unwrap())
         );
-        assert_eq!(pool.forwarding_next_hop(rfc8950, true), None);
+        // IPv4 routes in MP_REACH with an IPv4 next hop (no NEXT_HOP there).
+        let mp_v4 = pool.intern(
+            &attrs(&[64502])[..2],
+            Some(&NextHop::V4(Ipv4Addr::new(192, 0, 2, 9))),
+        );
+        assert_eq!(
+            pool.forwarding_next_hop(mp_v4, false),
+            Some("192.0.2.9".parse().unwrap())
+        );
+        // IPv6 routes via an IPv4 next hop: the kernel cannot do that.
+        assert_eq!(pool.forwarding_next_hop(mp_v4, true), None);
     }
 }

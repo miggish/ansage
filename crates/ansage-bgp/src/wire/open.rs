@@ -14,6 +14,7 @@ const PARAM_EXTENDED: u8 = 255;
 
 const CAP_MULTIPROTOCOL: u8 = 1;
 const CAP_ROUTE_REFRESH: u8 = 2;
+const CAP_EXTENDED_NEXT_HOP: u8 = 5;
 const CAP_EXTENDED_MESSAGE: u8 = 6;
 const CAP_GRACEFUL_RESTART: u8 = 64;
 const CAP_FOUR_OCTET_AS: u8 = 65;
@@ -28,6 +29,9 @@ pub enum Capability {
     },
     /// RFC 2918
     RouteRefresh,
+    /// RFC 8950: families whose routes may carry a next hop of another
+    /// family.
+    ExtendedNextHop(Vec<ExtendedNextHop>),
     /// RFC 8654
     ExtendedMessage,
     /// RFC 4724, N-bit from RFC 8538
@@ -51,6 +55,7 @@ impl Capability {
                 Capability::Multiprotocol { afi, safi }
             }
             CAP_ROUTE_REFRESH => Capability::RouteRefresh,
+            CAP_EXTENDED_NEXT_HOP => Capability::ExtendedNextHop(ExtendedNextHop::decode(&mut r)?),
             CAP_EXTENDED_MESSAGE => Capability::ExtendedMessage,
             CAP_GRACEFUL_RESTART => Capability::GracefulRestart(GracefulRestart::decode(&mut r)?),
             CAP_FOUR_OCTET_AS => Capability::FourOctetAs(r.u32()?),
@@ -74,6 +79,7 @@ impl Capability {
                 buf.put_u8(safi.0);
             }
             Capability::RouteRefresh => buf.put_slice(&[CAP_ROUTE_REFRESH, 0]),
+            Capability::ExtendedNextHop(entries) => ExtendedNextHop::encode(entries, buf),
             Capability::ExtendedMessage => buf.put_slice(&[CAP_EXTENDED_MESSAGE, 0]),
             Capability::GracefulRestart(gr) => gr.encode(buf),
             Capability::FourOctetAs(asn) => {
@@ -81,11 +87,62 @@ impl Capability {
                 buf.put_u32(*asn);
             }
             Capability::Unknown { code, value } => {
-                // Oversized values fail the parameter length check in Open::encode_body.
+                // Oversized values fail the parameter length check in
+                // Open::encode_body.
                 buf.put_u8(*code);
                 buf.put_u8(u8::try_from(value.len()).unwrap_or(u8::MAX));
                 buf.put_slice(value);
             }
+        }
+    }
+}
+
+/// One entry of the Extended Next Hop Encoding capability (RFC 8950 §3):
+/// routes of `afi`/`safi` may carry a next hop of `next_hop_afi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtendedNextHop {
+    pub afi: Afi,
+    pub safi: Safi,
+    pub next_hop_afi: Afi,
+}
+
+impl ExtendedNextHop {
+    /// IPv4 unicast routes with an IPv6 next hop, the only entry ansage uses.
+    pub const IPV4_UNICAST_OVER_IPV6: Self = Self {
+        afi: Afi::IPV4,
+        safi: Safi::UNICAST,
+        next_hop_afi: Afi::IPV6,
+    };
+
+    fn decode(r: &mut Reader) -> Result<Vec<Self>, DecodeError> {
+        let mut entries = Vec::new();
+        // Each entry is 6 bytes; a partial one fails the reader.
+        while !r.is_empty() {
+            let afi = Afi(r.u16()?);
+            let safi = r.u16()?;
+            let next_hop_afi = Afi(r.u16()?);
+            // The capability has room for 16-bit SAFIs, but SAFIs are 8 bits
+            // everywhere else, so such a family can never be negotiated.
+            if let Ok(safi) = u8::try_from(safi) {
+                entries.push(Self {
+                    afi,
+                    safi: Safi(safi),
+                    next_hop_afi,
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    fn encode(entries: &[Self], buf: &mut BytesMut) {
+        // Oversized lists fail the parameter length check in Open::encode_body.
+        let len = 6 * entries.len();
+        buf.put_u8(CAP_EXTENDED_NEXT_HOP);
+        buf.put_u8(u8::try_from(len).unwrap_or(u8::MAX));
+        for e in entries {
+            buf.put_u16(e.afi.0);
+            buf.put_u16(u16::from(e.safi.0));
+            buf.put_u16(e.next_hop_afi.0);
         }
     }
 }
@@ -149,7 +206,8 @@ impl GracefulRestart {
         if self.notification {
             flags |= Self::NOTIFICATION;
         }
-        // Oversized family lists fail the parameter length check in Open::encode_body.
+        // Oversized family lists fail the parameter length check in
+        // Open::encode_body.
         let len = 2 + 4 * self.families.len();
         buf.put_u8(CAP_GRACEFUL_RESTART);
         buf.put_u8(u8::try_from(len).unwrap_or(u8::MAX));

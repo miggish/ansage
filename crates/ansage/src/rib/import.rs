@@ -112,18 +112,21 @@ impl Rib {
                 || up.next_hop_ipv6.map(IpAddr::V6) == Some(addr)
                 || up.next_hop_ipv6_link_local.map(IpAddr::V6) == Some(addr)
         };
-        let own_v4_next_hop = update
+        let own_classic_next_hop = update
             .attrs
             .iter()
             .any(|a| matches!(a, PathAttr::NextHop(nh) if ours(IpAddr::V4(*nh))));
-        let own_v6_next_hop = reach.is_some_and(|m| match m.next_hop {
+        // MP_REACH routes: IPv6, and IPv4 with an IPv4 or (RFC 8950) IPv6 next
+        // hop.
+        let own_mp_next_hop = reach.is_some_and(|m| match m.next_hop {
             NextHop::V6 { global, link_local } => {
                 ours(IpAddr::V6(global)) || link_local.is_some_and(|ll| ours(IpAddr::V6(ll)))
             }
             NextHop::V4(addr) => ours(IpAddr::V4(addr)),
         });
-        let v4_reason = ineligible.or(own_v4_next_hop.then_some("next hop is our address"));
-        let v6_reason = ineligible.or(own_v6_next_hop.then_some("next hop is our address"));
+        let classic_reason =
+            ineligible.or(own_classic_next_hop.then_some("next hop is our address"));
+        let mp_reason = ineligible.or(own_mp_next_hop.then_some("next hop is our address"));
 
         // RFC 4271 §4.3: withdrawals first, so a prefix listed as withdrawn
         // and announced in the same UPDATE ends up announced.
@@ -131,8 +134,8 @@ impl Rib {
             self.withdraw(peer, prefix);
         }
         for (prefixes, reason, next_hop) in [
-            (announced, v4_reason, None),
-            (mp_announced, v6_reason, reach.map(|m| &m.next_hop)),
+            (announced, classic_reason, None),
+            (mp_announced, mp_reason, reach.map(|m| &m.next_hop)),
         ] {
             if prefixes.is_empty() {
                 continue;

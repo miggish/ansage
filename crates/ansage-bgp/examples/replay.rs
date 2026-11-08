@@ -410,6 +410,7 @@ async fn session(stream: TcpStream, table: Arc<Table>) -> io::Result<()> {
         graceful_restart: std::env::var("REPLAY_GRACEFUL_RESTART")
             .ok()
             .and_then(|s| s.parse().ok()),
+        extended_next_hop: false,
     });
 
     let (control_tx, mut control_rx) = mpsc::channel::<Bytes>(16);

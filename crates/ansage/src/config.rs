@@ -112,6 +112,12 @@ pub struct Neighbor {
     /// Our link-local address on the link shared with this neighbor; sent
     /// together with the global IPv6 next hop (RFC 2545 §3).
     pub next_hop_ipv6_link_local: Option<Ipv6Addr>,
+    /// Offer extended next hop (RFC 8950): IPv4 routes may use an IPv6
+    /// next hop, both ways. When the neighbor agrees and there is no IPv4
+    /// next hop (an IPv6 session without `next_hop_ipv4`), our IPv4 prefixes
+    /// go out with the IPv6 next hop. A change reconnects the session.
+    #[serde(default)]
+    pub extended_next_hop: bool,
     /// Which learned routes are kept: "none" (default, RFC 8212) or "all".
     #[serde(default)]
     pub import: ImportPolicy,
@@ -501,6 +507,7 @@ impl Config {
                 .graceful_restart
                 .unwrap_or(self.graceful_restart)
                 .then(|| neighbor.restart_time.unwrap_or(self.restart_time)),
+            extended_next_hop: neighbor.extended_next_hop,
         }
     }
 }
@@ -642,6 +649,14 @@ mod tests {
         assert!(parse(&format!("{BASE}restart_time = 4096")).is_err());
         parse(&format!("{BASE}restart_time = 4095")).unwrap();
         assert!(parse(&neighbor_with("restart_time = 0")).is_err());
+    }
+
+    #[test]
+    fn extended_next_hop() {
+        let config = parse(&neighbor_with("")).unwrap();
+        assert!(!config.session(&config.neighbors[0]).extended_next_hop);
+        let config = parse(&neighbor_with("extended_next_hop = true")).unwrap();
+        assert!(config.session(&config.neighbors[0]).extended_next_hop);
     }
 
     #[test]

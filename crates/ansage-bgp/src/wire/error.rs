@@ -107,6 +107,8 @@ pub enum EncodeError {
     AttributeTooLong(u8),
     #[error("OPEN optional parameters exceed 255 bytes")]
     OptionalParametersTooLong,
-    #[error("IPv6 routes need an MP_REACH next hop")]
+    /// IPv6 routes without an MP_REACH next hop, or IPv4 routes with neither
+    /// NEXT_HOP nor a usable IPv6 next hop (RFC 8950).
+    #[error("routes without a next hop for their family")]
     MissingNextHop,
 }

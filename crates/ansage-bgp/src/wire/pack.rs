@@ -16,10 +16,11 @@ use super::{
 };
 
 /// Appends UPDATEs announcing `prefixes` with `attrs`; returns the number of
-/// messages. IPv4 prefixes go into the NLRI field (`attrs` must then carry
-/// NEXT_HOP), IPv6 prefixes into MP_REACH_NLRI with `next_hop`; NEXT_HOP is
-/// left out of those. MP entries in `attrs` are ignored. On error `buf` is
-/// left as it was.
+/// messages. IPv6 prefixes go into MP_REACH_NLRI with `next_hop`, and NEXT_HOP
+/// is left out of those. IPv4 prefixes go into the NLRI field when `attrs`
+/// carries NEXT_HOP; without it, and with [`Negotiated::extended_next_hop`]
+/// and an IPv6 `next_hop`, into MP_REACH_NLRI with that next hop (RFC 8950).
+/// MP entries in `attrs` are ignored. On error `buf` is left as it was.
 pub fn announce(
     buf: &mut BytesMut,
     neg: &Negotiated,
@@ -61,37 +62,62 @@ fn announce_inner(
     let mut count = 0;
 
     let mut v4 = family(prefixes, Afi::IPV4);
-    let attr_bytes = encode_attrs(neg, attrs, |_| true)?;
-    while v4.peek().is_some() {
-        let start = header::begin(buf, MessageType::Update);
-        buf.put_u16(0);
-        buf.put_u16(u16::try_from(attr_bytes.len()).unwrap_or(u16::MAX));
-        buf.put_slice(&attr_bytes);
-        fill(buf, start, max, 0, &mut v4)?;
-        header::finish(buf, start, max)?;
-        count += 1;
+    let classic_next_hop = attrs.iter().any(|a| matches!(a, PathAttr::NextHop(_)));
+    if v4.peek().is_some() && classic_next_hop {
+        let attr_bytes = encode_attrs(neg, attrs, |_| true)?;
+        while v4.peek().is_some() {
+            let start = header::begin(buf, MessageType::Update);
+            buf.put_u16(0);
+            buf.put_u16(u16::try_from(attr_bytes.len()).unwrap_or(u16::MAX));
+            buf.put_slice(&attr_bytes);
+            fill(buf, start, max, 0, &mut v4)?;
+            header::finish(buf, start, max)?;
+            count += 1;
+        }
+    } else if v4.peek().is_some() {
+        // RFC 8950: an IPv6 next hop for IPv4 routes, only if agreed.
+        let next_hop = next_hop
+            .filter(|nh| neg.extended_next_hop && matches!(nh, NextHop::V6 { .. }))
+            .ok_or(EncodeError::MissingNextHop)?;
+        count += announce_mp(buf, neg, attrs, next_hop, Afi::IPV4, &mut v4)?;
     }
 
     let mut v6 = family(prefixes, Afi::IPV6);
     if v6.peek().is_some() {
         let next_hop = next_hop.ok_or(EncodeError::MissingNextHop)?;
-        let attr_bytes = encode_attrs(neg, attrs, |code| code != type_code::NEXT_HOP)?;
-        while v6.peek().is_some() {
-            let start = header::begin(buf, MessageType::Update);
-            buf.put_u16(0);
-            let attrs_pos = buf.len();
-            buf.put_u16(0);
-            let mp = begin_mp(buf, type_code::MP_REACH_NLRI);
-            put_next_hop(buf, next_hop);
-            buf.put_u8(0);
-            // The other attributes follow MP_REACH, so keep room for them.
-            fill(buf, start, max, attr_bytes.len(), &mut v6)?;
-            patch_u16(buf, mp + 2, buf.len() - mp - 4);
-            buf.put_slice(&attr_bytes);
-            patch_u16(buf, attrs_pos, buf.len() - attrs_pos - 2);
-            header::finish(buf, start, max)?;
-            count += 1;
-        }
+        count += announce_mp(buf, neg, attrs, next_hop, Afi::IPV6, &mut v6)?;
+    }
+    Ok(count)
+}
+
+/// Announces `prefixes` of `afi` in MP_REACH_NLRI with `next_hop`; NEXT_HOP
+/// is left out. Returns the number of messages.
+fn announce_mp(
+    buf: &mut BytesMut,
+    neg: &Negotiated,
+    attrs: &[PathAttr],
+    next_hop: &NextHop,
+    afi: Afi,
+    prefixes: &mut Peekable<impl Iterator<Item = Prefix>>,
+) -> Result<usize, EncodeError> {
+    let max = neg.max_message_len();
+    let attr_bytes = encode_attrs(neg, attrs, |code| code != type_code::NEXT_HOP)?;
+    let mut count = 0;
+    while prefixes.peek().is_some() {
+        let start = header::begin(buf, MessageType::Update);
+        buf.put_u16(0);
+        let attrs_pos = buf.len();
+        buf.put_u16(0);
+        let mp = begin_mp(buf, type_code::MP_REACH_NLRI, afi);
+        put_next_hop(buf, next_hop);
+        buf.put_u8(0);
+        // The other attributes follow MP_REACH, so keep room for them.
+        fill(buf, start, max, attr_bytes.len(), prefixes)?;
+        patch_u16(buf, mp + 2, buf.len() - mp - 4);
+        buf.put_slice(&attr_bytes);
+        patch_u16(buf, attrs_pos, buf.len() - attrs_pos - 2);
+        header::finish(buf, start, max)?;
+        count += 1;
     }
     Ok(count)
 }
@@ -123,7 +149,7 @@ fn withdraw_inner(
         buf.put_u16(0);
         let attrs_pos = buf.len();
         buf.put_u16(0);
-        let mp = begin_mp(buf, type_code::MP_UNREACH_NLRI);
+        let mp = begin_mp(buf, type_code::MP_UNREACH_NLRI, Afi::IPV6);
         fill(buf, start, max, 0, &mut v6)?;
         patch_u16(buf, mp + 2, buf.len() - mp - 4);
         patch_u16(buf, attrs_pos, buf.len() - attrs_pos - 2);
@@ -152,10 +178,10 @@ fn family(prefixes: &[Prefix], afi: Afi) -> Peekable<impl Iterator<Item = Prefix
         .peekable()
 }
 
-/// Starts an IPv6 unicast MP attribute with a 2-octet length placeholder;
+/// Starts a unicast MP attribute for `afi` with a 2-octet length placeholder;
 /// returns its start. Extended length is always used, which RFC 4271 allows
 /// for any length, so the attribute can grow without moving bytes.
-fn begin_mp(buf: &mut BytesMut, code: u8) -> usize {
+fn begin_mp(buf: &mut BytesMut, code: u8, afi: Afi) -> usize {
     let start = buf.len();
     buf.put_slice(&[
         attr_flags::OPTIONAL | attr_flags::EXTENDED_LENGTH,
@@ -163,7 +189,7 @@ fn begin_mp(buf: &mut BytesMut, code: u8) -> usize {
         0,
         0,
     ]);
-    buf.put_u16(Afi::IPV6.0);
+    buf.put_u16(afi.0);
     buf.put_u8(Safi::UNICAST.0);
     start
 }
@@ -206,6 +232,7 @@ mod tests {
         four_octet_as: true,
         extended_message: false,
         ibgp: false,
+        extended_next_hop: false,
     };
 
     fn attrs() -> Vec<PathAttr> {
@@ -359,5 +386,77 @@ mod tests {
         let err = announce(&mut buf, &NEG, &attrs(), None, &v6s(1)).unwrap_err();
         assert_eq!(err, EncodeError::MissingNextHop);
         assert_eq!(&buf[..], b"keep");
+    }
+
+    const EXTENDED_NEXT_HOP: Negotiated = Negotiated {
+        extended_next_hop: true,
+        ..NEG
+    };
+
+    fn attrs_without_next_hop() -> Vec<PathAttr> {
+        let mut attrs = attrs();
+        attrs.retain(|a| a.type_code() != type_code::NEXT_HOP);
+        attrs
+    }
+
+    #[test]
+    fn ipv4_with_ipv6_next_hop_goes_into_mp_reach() {
+        let prefixes: Vec<Prefix> = v4s(3000).into_iter().chain(v6s(2)).collect();
+        let mut buf = BytesMut::new();
+        let attrs = attrs_without_next_hop();
+        let neg = &EXTENDED_NEXT_HOP;
+        announce(&mut buf, neg, &attrs, Some(&v6_next_hop()), &prefixes).unwrap();
+        let updates = decode_all(buf, neg);
+        assert_eq!(announced(&updates), prefixes, "all prefixes, in order");
+        assert!(updates.len() > 2, "IPv4 prefixes fill several messages");
+        for (_, update) in &updates {
+            let mp = update.mp_reach.as_ref().unwrap();
+            assert!(update.nlri.is_empty());
+            assert_eq!(mp.next_hop, v6_next_hop());
+            assert!(mp.nlri.iter().all(|p| p.afi() == mp.afi));
+            assert_eq!(update.attrs, attrs);
+        }
+        let afis: Vec<Afi> = updates
+            .iter()
+            .map(|(_, u)| u.mp_reach.as_ref().unwrap().afi)
+            .collect();
+        assert_eq!(afis.last(), Some(&Afi::IPV6));
+        assert_eq!(afis.iter().filter(|a| **a == Afi::IPV6).count(), 1);
+    }
+
+    #[test]
+    fn ipv4_next_hop_attribute_wins_over_extended_next_hop() {
+        let mut buf = BytesMut::new();
+        let neg = &EXTENDED_NEXT_HOP;
+        announce(&mut buf, neg, &attrs(), Some(&v6_next_hop()), &v4s(2)).unwrap();
+        let updates = decode_all(buf, neg);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.nlri.len(), 2);
+        assert_eq!(updates[0].1.mp_reach, None);
+    }
+
+    #[test]
+    fn ipv4_without_any_next_hop_fails_cleanly() {
+        let v4_next_hop = NextHop::V4(Ipv4Addr::new(192, 0, 2, 1));
+        for (neg, next_hop) in [
+            // Not agreed with the peer.
+            (&NEG, Some(v6_next_hop())),
+            // Agreed, but no IPv6 next hop to send.
+            (&EXTENDED_NEXT_HOP, None),
+            (&EXTENDED_NEXT_HOP, Some(v4_next_hop)),
+        ] {
+            let mut buf = BytesMut::from(&b"keep"[..]);
+            let prefixes: Vec<Prefix> = v6s(1).into_iter().chain(v4s(1)).collect();
+            let err = announce(
+                &mut buf,
+                neg,
+                &attrs_without_next_hop(),
+                next_hop.as_ref(),
+                &prefixes,
+            )
+            .unwrap_err();
+            assert_eq!(err, EncodeError::MissingNextHop);
+            assert_eq!(&buf[..], b"keep");
+        }
     }
 }

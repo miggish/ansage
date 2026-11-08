@@ -19,9 +19,9 @@ use std::{
 use bytes::Bytes;
 
 use crate::wire::{
-    Afi, Capability, DecodeError, GrFamily, GracefulRestart, MAX_EXTENDED_MESSAGE_LEN,
-    MAX_MESSAGE_LEN, Message, MessageType, Negotiated, Notification, Open, RouteRefresh, Safi,
-    Update, cease_subcode, error_code,
+    Afi, Capability, DecodeError, ExtendedNextHop, GrFamily, GracefulRestart,
+    MAX_EXTENDED_MESSAGE_LEN, MAX_MESSAGE_LEN, Message, MessageType, Negotiated, Notification,
+    Open, RouteRefresh, Safi, Update, cease_subcode, error_code,
 };
 
 /// Hold time while waiting for the peer's OPEN (RFC 4271 §8.2.2: "4 minutes is
@@ -63,6 +63,9 @@ pub struct SessionConfig {
     /// Graceful Restart (RFC 4724) with this restart time in seconds; None:
     /// no Graceful Restart capability.
     pub graceful_restart: Option<u16>,
+    /// Offer IPv6 next hops for IPv4 unicast routes (RFC 8950 Extended
+    /// Next Hop Encoding). Agreed when the peer offers the same.
+    pub extended_next_hop: bool,
 }
 
 /// What both sides agreed on in the OPEN exchange.
@@ -454,6 +457,11 @@ impl Fsm {
             Capability::RouteRefresh,
             Capability::ExtendedMessage,
         ];
+        if self.config.extended_next_hop {
+            capabilities.push(Capability::ExtendedNextHop(vec![
+                ExtendedNextHop::IPV4_UNICAST_OVER_IPV6,
+            ]));
+        }
         if let Some(restart_time) = self.config.graceful_restart {
             // F bit always set: ansage never forwards. The routes it
             // announces lead to the kernel's forwarding, which an ansage
@@ -501,7 +509,8 @@ impl Fsm {
                 _ => None,
             })
             .collect();
-        // RFC 4760 §8: without any Multiprotocol capability, IPv4 unicast is implied.
+        // RFC 4760 §8: without any Multiprotocol capability, IPv4 unicast is
+        // implied.
         let families = ours
             .iter()
             .filter_map(|c| match c {
@@ -544,6 +553,13 @@ impl Fsm {
                     .any(|c| matches!(c, Capability::FourOctetAs(_))),
                 extended_message: has(&Capability::ExtendedMessage),
                 ibgp: asn == self.config.local_asn,
+                extended_next_hop: self.config.extended_next_hop
+                    && theirs.iter().any(|c| match c {
+                        Capability::ExtendedNextHop(entries) => {
+                            entries.contains(&ExtendedNextHop::IPV4_UNICAST_OVER_IPV6)
+                        }
+                        _ => false,
+                    }),
             },
             families,
             route_refresh: has(&Capability::RouteRefresh),
@@ -882,6 +898,7 @@ mod tests {
             jitter: false,
             passive: false,
             graceful_restart: None,
+            extended_next_hop: false,
         }
     }
 
@@ -903,7 +920,8 @@ mod tests {
         h.event(Event::Message(peer_open(64501, HOLD, dual_stack())));
         h.event(Event::Message(Message::Keepalive));
         assert_eq!(h.fsm.state(), State::Established);
-        // The peer shuts us down administratively: next try after 10 s, then 20 s.
+        // The peer shuts us down administratively: next try after 10 s, then 20
+        // s.
         let n = Notification::admin_shutdown("maintenance");
         h.event(Event::Message(Message::Notification(n)));
         assert_eq!(h.fsm.next_deadline(), Some(h.now + Duration::from_secs(10)));
@@ -1072,6 +1090,61 @@ mod tests {
             info.families,
             [(Afi::IPV4, Safi::UNICAST), (Afi::IPV6, Safi::UNICAST)]
         );
+        assert!(!info.negotiated.extended_next_hop);
+    }
+
+    /// Our OPEN and the negotiated flag for RFC 8950, with `ours` as our
+    /// setting and `theirs` as the peer's Extended Next Hop entries (None:
+    /// no capability).
+    fn extended_next_hop(ours: bool, theirs: Option<Vec<ExtendedNextHop>>) -> (Open, bool) {
+        let mut h = Harness::new();
+        h.fsm = Fsm::new(SessionConfig {
+            extended_next_hop: ours,
+            ..config()
+        });
+        h.event(Event::Start);
+        let out = h.event(Event::TcpConnected);
+        let [Action::Send(Message::Open(open))] = &out[..] else {
+            panic!("expected OPEN, got {out:?}");
+        };
+        let open = open.clone();
+        let mut caps = dual_stack();
+        caps.extend(theirs.map(Capability::ExtendedNextHop));
+        h.event(Event::Message(peer_open(64501, HOLD, caps)));
+        let mut out = h.event(Event::Message(Message::Keepalive));
+        let Some(Action::Up(info)) = out.pop() else {
+            panic!("expected Up, got {out:?}");
+        };
+        (open, info.negotiated.extended_next_hop)
+    }
+
+    #[test]
+    fn extended_next_hop_negotiation() {
+        let ipv4_over_ipv6 = ExtendedNextHop::IPV4_UNICAST_OVER_IPV6;
+        let ours = Capability::ExtendedNextHop(vec![ipv4_over_ipv6]);
+
+        let (open, agreed) = extended_next_hop(true, Some(vec![ipv4_over_ipv6]));
+        assert!(open.capabilities.contains(&ours));
+        assert!(agreed);
+
+        // Not offered by us: not sent, not agreed even if the peer offers it.
+        let (open, agreed) = extended_next_hop(false, Some(vec![ipv4_over_ipv6]));
+        assert!(
+            !open
+                .capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::ExtendedNextHop(_)))
+        );
+        assert!(!agreed);
+
+        // The peer offers nothing, or only other families.
+        assert!(!extended_next_hop(true, None).1);
+        let vpn = ExtendedNextHop {
+            safi: Safi(128),
+            ..ipv4_over_ipv6
+        };
+        assert!(!extended_next_hop(true, Some(vec![vpn])).1);
+        assert!(extended_next_hop(true, Some(vec![vpn, ipv4_over_ipv6])).1);
     }
 
     #[test]
@@ -1226,7 +1299,8 @@ mod tests {
         h.establish(30);
         h.advance(Duration::from_secs(5));
         h.fsm.update_sent(h.now);
-        // The keepalive is now due 10 s after the UPDATE, not after Established.
+        // The keepalive is now due 10 s after the UPDATE, not after
+        // Established.
         assert_eq!(h.advance(Duration::from_secs(5)), []);
         assert_eq!(
             h.advance(Duration::from_secs(5)),
@@ -1420,7 +1494,8 @@ mod tests {
 
     #[test]
     fn equal_ids_compare_as_numbers() {
-        // RFC 6286 §2.3: eBGP peers may share an identifier; the higher AS wins.
+        // RFC 6286 §2.3: eBGP peers may share an identifier; the higher AS
+        // wins.
         let mut h = Harness::new();
         h.event(Event::Start);
         h.event(Event::TcpConnected);
@@ -1663,7 +1738,8 @@ mod tests {
         };
         assert_eq!(our_gr(open), None);
 
-        // On: R set until the first session is up, N always, F for both families.
+        // On: R set until the first session is up, N always, F for both
+        // families.
         let (mut h, info) = gr_established(vec![gr_cap(true, true)]);
         let gr = info.graceful_restart.expect("negotiated");
         assert_eq!(gr.restart_time, 120);

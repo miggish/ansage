@@ -273,6 +273,8 @@ pub struct SessionStatus {
     pub route_refresh: bool,
     pub four_octet_as: bool,
     pub extended_message: bool,
+    /// RFC 8950 agreed: IPv4 routes may use IPv6 next hops.
+    pub extended_next_hop: bool,
     pub ibgp: bool,
     /// The peer's Graceful Restart, if both sides offered it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -455,6 +457,7 @@ impl Reporter {
                     route_refresh: peer.route_refresh,
                     four_octet_as: peer.negotiated.four_octet_as,
                     extended_message: peer.negotiated.extended_message,
+                    extended_next_hop: peer.negotiated.extended_next_hop,
                     ibgp: peer.negotiated.ibgp,
                     graceful_restart: peer.graceful_restart.as_ref().map(gr_status),
                     peer_graceful_restart: peer.offered_graceful_restart.as_ref().map(gr_status),
@@ -530,6 +533,7 @@ mod tests {
             jitter: false,
             passive: false,
             graceful_restart: None,
+            extended_next_hop: false,
         })
     }
 

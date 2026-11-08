@@ -100,6 +100,7 @@ pub(super) fn peer(p: &Value, now: u64) -> String {
             ("route_refresh", "route refresh"),
             ("four_octet_as", "4-octet AS"),
             ("extended_message", "extended messages"),
+            ("extended_next_hop", "extended next hop"),
         ] {
             if session[key] == true {
                 features.push(name.to_string());

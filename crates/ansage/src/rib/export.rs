@@ -37,10 +37,16 @@ fn export_route(
     Some(best.attrs)
 }
 
+/// No next hop to send `afi` routes with. IPv4 routes can also use the IPv6
+/// next hop once extended next hop (RFC 8950) is agreed.
 fn next_hop_missing(state: &PeerState, afi: Afi) -> bool {
+    let v6_missing = state.up.next_hop_ipv6.is_none();
     match afi {
-        Afi::IPV4 => state.up.next_hop_ipv4.is_none(),
-        _ => state.up.next_hop_ipv6.is_none(),
+        Afi::IPV4 => {
+            state.up.next_hop_ipv4.is_none()
+                && (v6_missing || !state.up.info.negotiated.extended_next_hop)
+        }
+        _ => v6_missing,
     }
 }
 
@@ -55,7 +61,8 @@ fn warn_missing_next_hops(state: &mut PeerState) {
                 peer = state.up.peer,
                 ?afi,
                 "no next hop for this family (session runs over the other family; \
-                 set next_hop_ipv4/next_hop_ipv6), its routes are not announced"
+                 set next_hop_ipv4/next_hop_ipv6, or extended_next_hop for IPv4), \
+                 its routes are not announced"
             );
         }
     }

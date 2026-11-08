@@ -31,7 +31,9 @@ pub use header::{
     HEADER_LEN, MAX_EXTENDED_MESSAGE_LEN, MAX_MESSAGE_LEN, MessageType, split_message,
 };
 pub use notification::{Notification, cease_subcode, error_code};
-pub use open::{AS_TRANS, BGP_VERSION, Capability, GrFamily, GracefulRestart, Open};
+pub use open::{
+    AS_TRANS, BGP_VERSION, Capability, ExtendedNextHop, GrFamily, GracefulRestart, Open,
+};
 pub use prefix::{Prefix, Prefix4, Prefix6, PrefixError};
 pub use route_refresh::RouteRefresh;
 pub use update::Update;
@@ -54,7 +56,7 @@ impl Safi {
 }
 
 /// Session parameters agreed in the OPEN exchange that change how messages
-/// are encoded. Before the exchange both are `false`.
+/// are encoded. Before the exchange all are `false`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Negotiated {
     /// Both sides sent the 4-octet AS capability (RFC 6793): AS numbers in
@@ -65,6 +67,10 @@ pub struct Negotiated {
     /// Both sides are in the same AS. Changes RFC 7606 handling of a
     /// malformed LOCAL_PREF (treat-as-withdraw instead of attribute discard).
     pub ibgp: bool,
+    /// Both sides sent the Extended Next Hop Encoding capability for IPv4
+    /// unicast with IPv6 next hops (RFC 8950): IPv4 routes may come in
+    /// MP_REACH_NLRI with an IPv6 next hop, and may be sent that way.
+    pub extended_next_hop: bool,
 }
 
 impl Negotiated {

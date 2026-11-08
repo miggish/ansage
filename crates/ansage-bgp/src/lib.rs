@@ -3,7 +3,8 @@
 //!
 //! - [`wire`] decodes and encodes messages (OPEN, UPDATE, NOTIFICATION,
 //!   KEEPALIVE, ROUTE-REFRESH) for IPv4 and IPv6 unicast, with 4-octet AS
-//!   numbers, extended messages, graceful restart and RFC 7606 error handling.
+//!   numbers, extended messages, extended next hops (RFC 8950), graceful
+//!   restart and RFC 7606 error handling.
 //! - [`session`] is the finite state machine: events and the current time go
 //!   in, actions come out. Sockets and timers stay with the caller.
 //!
@@ -14,23 +15,25 @@
 //! ```
 //! use std::net::Ipv4Addr;
 //!
-//! use ansage_bgp::wire::{self, AsPath, Message, Negotiated, NextHop, Origin, PathAttr, Prefix};
+//! use ansage_bgp::wire::{self, AsPath, Message, Negotiated, Origin, PathAttr, Prefix};
 //! use bytes::BytesMut;
 //!
 //! let neg = Negotiated {
 //!     four_octet_as: true,
 //!     ..Negotiated::default()
 //! };
+//! // Sorted by type code. IPv4 routes take their next hop from NEXT_HOP;
+//! // IPv6 routes would need an MP_REACH next hop in place of `None` below.
 //! let attrs = [
 //!     PathAttr::Origin(Origin::Igp),
 //!     PathAttr::AsPath(AsPath::sequence([64500])),
+//!     PathAttr::NextHop(Ipv4Addr::new(192, 0, 2, 1)),
 //! ];
-//! let next_hop = NextHop::V4(Ipv4Addr::new(192, 0, 2, 1));
 //! let prefixes: Vec<Prefix> = vec!["198.51.100.0/24".parse()?, "203.0.113.0/24".parse()?];
 //!
 //! // As few UPDATEs as fit the negotiated message size.
 //! let mut buf = BytesMut::new();
-//! let messages = wire::pack::announce(&mut buf, &neg, &attrs, Some(&next_hop), &prefixes)?;
+//! let messages = wire::pack::announce(&mut buf, &neg, &attrs, None, &prefixes)?;
 //! assert_eq!(messages, 1);
 //!
 //! // What a receiver does with the bytes from its socket.
@@ -60,6 +63,7 @@
 //!     jitter: true,
 //!     passive: false,
 //!     graceful_restart: None,
+//!     extended_next_hop: false,
 //! });
 //! let mut actions = Vec::new();
 //! fsm.handle(Event::Start, Instant::now(), &mut actions);

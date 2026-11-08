@@ -129,6 +129,75 @@ scn_N5() {
     wait_until 5 http_is user2 2001:db8:2::10 srv-c
 }
 
+# k_via6 PREFIX: the IPv6 gateway of srv-c's kernel route for the IPv4 PREFIX
+# (RFC 8950; empty: none or not via IPv6).
+k_via6() {
+    on srv-c ip -4 -j route show proto bgp "$1" | jq -r '.[0].via | select(.family == "inet6") | .host'
+}
+k_via6_is() { [ "$(k_via6 "$1")" = "$2" ]; }
+
+# BIRD variant: srv_c over IPv6 transport with extended next hop for IPv4.
+# docs/03-guides/02-router-config.mdx shows the ipv4 line.
+N23_BIRD='/^protocol bgp srv_c/,/^}/{
+s/local 10.201.0.3;/local 2001:db8:201::3;/
+s/neighbor 10.201.0.10 as/neighbor 2001:db8:201::10 as/
+s/ipv4 { import all; export all; };/ipv4 { import all; export all; extended next hop on; };/
+s/ipv6 { import all; export all; next hop address 2001:db8:201::3; };/ipv6 { import all; export all; };/
+}'
+
+scenario N23 default - "extended next hop (RFC 8950) with BIRD: IPv4 over an IPv6-only session, both ways"
+scn_N23() {
+    allow_flap srv-c
+    trap n_restore EXIT
+    bird_use r2 "$N23_BIRD"
+    srv_c_conf n23 r2_addr=2001:db8:201::3 r2_nh6= r2_extra='extended_next_hop = true' extra='[kernel]'
+    srv_c_use gen-n23.toml
+    wait_until 15 bird_established r2 srv_c
+    wait_until 5 ansage_established srv-c 2001:db8:201::3
+    [ "$(ansage_peer srv-c 2001:db8:201::3 .status.session.extended_next_hop)" = true ] ||
+        fail "srv-c: extended next hop not agreed with r2"
+    # ansage -> BIRD: the IPv4 prefix with ansage's IPv6 address as next hop.
+    wait_until 5 eval 'bird_rib r2 | grep -x "198.51.100.0/24 srv_c AS64502i 2001:db8:201::10 best"'
+    # BIRD -> ansage: user2's network via r2's IPv6 address, in srv-c's kernel.
+    wait_until 10 k_via6_is 10.201.2.0/24 2001:db8:201::3 ||
+        fail "srv-c: 10.201.2.0/24 not via inet6 2001:db8:201::3: $(on srv-c ip -4 route show proto bgp 10.201.2.0/24)"
+    # IPv4 traffic forwarded over IPv6 next hops in both directions.
+    assert_http user2 198.51.100.10 srv-c
+}
+
+# FRR's neighbor for srv-c over IPv6; docs/03-guides/02-router-config.mdx shows these lines.
+frr_n24_neighbor() {
+    frr_conf r1 'router bgp 64510' \
+        'neighbor 2001:db8:201::10 remote-as 64502' 'neighbor 2001:db8:201::10 passive' \
+        'neighbor 2001:db8:201::10 capability extended-nexthop' \
+        'neighbor 2001:db8:201::10 advertisement-interval 0' \
+        'address-family ipv4 unicast' 'neighbor 2001:db8:201::10 activate' 'exit-address-family' \
+        'address-family ipv6 unicast' 'neighbor 2001:db8:201::10 activate' 'exit-address-family' >/dev/null
+}
+
+n24_restore() {
+    frr_conf r1 'router bgp 64510' 'no neighbor 2001:db8:201::10' >/dev/null 2>&1 || true
+    n_restore
+}
+
+scenario N24 default - "extended next hop (RFC 8950) with FRR: IPv4 over an IPv6-only session, both ways"
+scn_N24() {
+    allow_flap srv-c
+    trap n24_restore EXIT
+    frr_n24_neighbor
+    srv_c_conf n24 r1_addr=2001:db8:201::2 r1_nh6= r1_extra='extended_next_hop = true' extra='[kernel]'
+    srv_c_use gen-n24.toml
+    wait_until 15 frr_established r1 2001:db8:201::10
+    wait_until 5 ansage_established srv-c 2001:db8:201::2
+    [ "$(ansage_peer srv-c 2001:db8:201::2 .status.session.extended_next_hop)" = true ] ||
+        fail "srv-c: extended next hop not agreed with r1"
+    wait_until 5 eval 'frr_path r1 198.51.100.0/24 2001:db8:201::10 | jq -e ".nexthops[0].ip == \"2001:db8:201::10\""' ||
+        fail "r1: 198.51.100.0/24 from srv-c: $(frr_path r1 198.51.100.0/24 2001:db8:201::10)"
+    wait_until 10 k_via6_is 10.201.1.0/24 2001:db8:201::2 ||
+        fail "srv-c: 10.201.1.0/24 not via inet6 2001:db8:201::2: $(on srv-c ip -4 route show proto bgp 10.201.1.0/24)"
+    assert_http user1 198.51.100.10 srv-c
+}
+
 scenario N6 full - "hold time 0: no keepalives, session stays up"
 scn_N6() {
     allow_flap srv-c
@@ -296,7 +365,7 @@ scenario N22 default - "TCP MD5 with BIRD (password, as in the docs): Establishe
 scn_N22() {
     allow_flap srv-c
     trap n_restore EXIT
-    # website/content/docs/guides/router-config.mdx shows this line.
+    # docs/03-guides/02-router-config.mdx shows this line.
     bird_use r2 '/^protocol bgp srv_c/,/^}/s/passive on;/passive on;\n    password "e2e-secret";/'
     srv_c_conf n22 r2_extra='password = "e2e-secret"'
     srv_c_use gen-n22.toml
