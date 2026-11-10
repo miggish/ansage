@@ -1,0 +1,53 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"framework": null,
+	"installCommand": "bun install --frozen-lockfile",
+	"buildCommand": "bun run build",
+	"outputDirectory": "dist",
+	"ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../docs ../crates/ansage/src/config.rs",
+	"trailingSlash": false,
+	"routes": [
+		{
+			"src": "/docs/?",
+			"has": [
+				{
+					"type": "header",
+					"key": "accept",
+					"value": { "re": "text/markdown" }
+				}
+			],
+			"dest": "/docs.md",
+			"headers": {
+				"Content-Type": "text/markdown; charset=utf-8",
+				"Vary": "Accept"
+			}
+		},
+		{
+			"src": "/docs/([^.]+?)/?",
+			"has": [
+				{
+					"type": "header",
+					"key": "accept",
+					"value": { "re": "text/markdown" }
+				}
+			],
+			"dest": "/docs/$1.md",
+			"headers": {
+				"Content-Type": "text/markdown; charset=utf-8",
+				"Vary": "Accept"
+			}
+		}
+	],
+	"headers": [
+		{
+			"source": "/(.*)\\.md",
+			"headers": [
+				{ "key": "Content-Type", "value": "text/markdown; charset=utf-8" }
+			]
+		},
+		{
+			"source": "/docs/:path*",
+			"headers": [{ "key": "Vary", "value": "Accept" }]
+		}
+	]
+}
