@@ -14,17 +14,18 @@ description: The RFCs ansage implements, and what it deliberately leaves out.
 | [6793](https://www.rfc-editor.org/rfc/rfc6793) | 4-octet AS numbers | |
 | [8654](https://www.rfc-editor.org/rfc/rfc8654) | Extended messages | UPDATEs up to 65535 bytes |
 | [9072](https://www.rfc-editor.org/rfc/rfc9072) | Extended optional parameters length | decoding OPENs that use it |
-| [2918](https://www.rfc-editor.org/rfc/rfc2918) | Route refresh | answers a refresh with our routes |
+| [2918](https://www.rfc-editor.org/rfc/rfc2918) | Route refresh | answers a refresh with our routes; asks for one when an import policy changes |
 | [4724](https://www.rfc-editor.org/rfc/rfc4724) | Graceful Restart | `graceful_restart`, `ansage upgrade` |
 | [8538](https://www.rfc-editor.org/rfc/rfc8538) | Notification support for Graceful Restart (N bit) | Hard Reset on stop |
 | [8326](https://www.rfc-editor.org/rfc/rfc8326) | Graceful shutdown | `ansage drain`, `drain_time` |
 | [8212](https://www.rfc-editor.org/rfc/rfc8212) | Default eBGP route propagation behavior | `import = "none"` by default |
+| [9234](https://www.rfc-editor.org/rfc/rfc9234) | Route leak prevention with roles | `role`, `strict_role`: BGP Role capability, Only-To-Customer attribute, no provider or peer routes to providers or peers |
 | [7606](https://www.rfc-editor.org/rfc/rfc7606) | Revised error handling for UPDATEs | treat-as-withdraw, attribute discard |
 | [4486](https://www.rfc-editor.org/rfc/rfc4486) | Cease subcodes | max prefixes, reconnect backoff |
 | [9003](https://www.rfc-editor.org/rfc/rfc9003) | Shutdown communication | `ansage peer N disable --reason` |
 | [6286](https://www.rfc-editor.org/rfc/rfc6286) | AS-wide unique BGP identifier | |
 | [6608](https://www.rfc-editor.org/rfc/rfc6608) | Subcodes for BGP FSM errors | |
-| [1997](https://www.rfc-editor.org/rfc/rfc1997), [8092](https://www.rfc-editor.org/rfc/rfc8092) | Communities, large communities | decoded and shown in `ansage show rib` |
+| [1997](https://www.rfc-editor.org/rfc/rfc1997), [8092](https://www.rfc-editor.org/rfc/rfc8092) | Communities, large communities | shown in `ansage show rib`, matched and set by filters; NO_EXPORT and NO_ADVERTISE are honored |
 
 ## Transport and security
 
@@ -36,7 +37,7 @@ description: The RFCs ansage implements, and what it deliberately leaves out.
 ## Not supported
 
 - Address families other than IPv4 and IPv6 unicast (no VPN, EVPN, flowspec, multicast).
-- Re-exporting learned routes, route reflection, confederations (planned: re-export).
+- Route reflection, route servers (`role = "rs-client"`), confederations.
 - Enhanced route refresh (RFC 7313), outbound route filtering (ORF, RFC 5291), ADD-PATH, BFD, TCP-AO.
 - With `[kernel]`: routes whose next hop is of the other family (RFC 8950) are not installed.
 

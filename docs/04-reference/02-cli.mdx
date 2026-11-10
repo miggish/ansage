@@ -6,6 +6,7 @@ description: Every ansage command, its options and what it prints.
 ```txt
 ansage [--config FILE] [--log-format text|json]        run the daemon
 ansage [--config FILE] check                           validate a config
+ansage [--config FILE] test --offline ...              test routes against a config
 ansage [-c FILE | -s SOCKET] [--json] COMMAND ...      talk to the running daemon
 ansage --version | --help
 ```
@@ -72,11 +73,15 @@ Neighbor 10.0.0.1:179 (ID 1), AS 64501, "r1 (FRR)"
   Problems: 0 malformed UPDATEs, 0 with discarded attributes, 0 decode errors, 0 control / 0 data queue drops
 ```
 
-### `ansage show rib [PREFIX | ADDRESS] [--family ipv4|ipv6] [--limit N]`
+### `ansage show rib [PREFIX | ADDRESS] [--family ipv4|ipv6] [--limit N] [--out NEIGHBOR]`
 
 Without an argument: the best route of every prefix, at most `--limit` (default 1000) per
 family. With a prefix: every candidate for exactly that prefix. With an address: the longest
 prefix containing it. `--family` and `--limit` only go without a prefix.
+
+`--out NEIGHBOR` (ID, address or address:port) lists what ansage sent to that neighbor instead,
+with the attributes and next hop the neighbor got (the Adj-RIB-Out), headed `Sent to ADDRESS: N
+prefixes`. See [Transit and filters](/docs/guides/transit#what-a-neighbor-gets).
 
 ```txt
    PREFIX              SOURCE     NEXT HOP     AS PATH  ORIGIN  LOCAL PREF  MED  COMMUNITIES
@@ -131,6 +136,34 @@ Neighbor 10.0.0.1:179 (ID 1): disable requested
 
 See [Take one neighbor down](/docs/guides/peer-maintenance).
 
+## Test
+
+### `ansage test TARGET [--from NEIGHBOR ...] [--offline]`, `ansage test --file FILE [--offline]`
+
+What ansage does with one route, step by step: import, best path, kernel, and the export to
+every configured neighbor, each with its reason. Changes nothing. See
+[Test and shadow test](/docs/guides/test).
+
+| Option | Meaning |
+|---|---|
+| `TARGET` | with `--from`: the prefix of the route to test; without: a prefix, or an address (the longest prefix containing it), whose current route is shown |
+| `--from NEIGHBOR` | the neighbor address the route comes from |
+| `--as-path "A B C"` | the AS path; default: the neighbor's AS (empty over iBGP) |
+| `--community A:B` | a community the route carries; repeatable |
+| `--large-community A:B:C` | a large community; repeatable |
+| `--med N` | the MED |
+| `--next-hop ADDR` | the next hop; default: the neighbor's address |
+| `--otc ASN` | an Only-To-Customer attribute (RFC 9234) set by this AS |
+| `--offline` | work it out from the config file (`--config`) without the running ansage: no learned routes, every session assumed up |
+| `--file FILE` | run the `[[test]]` entries of a TOML file and check their `expect`; exit 1 if one fails |
+
+```txt
+$ ansage test 198.51.100.0/25 --from 10.0.1.2
+Route   198.51.100.0/25 from 10.0.1.2
+        AS path 64510, next hop 10.0.1.2
+Import  rejected: no rule of the import filter matches (filter from-customer)
+```
+
 ## Config and restarts
 
 ### `ansage reload`
@@ -142,7 +175,8 @@ $ ansage reload
 Config reloaded, nothing changed
 ```
 
-See [Reload the config](/docs/guides/reload).
+Neighbors whose `import`, `export`, `default_route` or filters changed are listed under
+"Neighbors updated without reconnecting". See [Reload the config](/docs/guides/reload).
 
 ### `ansage upgrade [--binary PATH] [--dry-run] [--force] [--timeout SECONDS]`
 

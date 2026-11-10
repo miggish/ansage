@@ -12,7 +12,7 @@ copy of the control socket's answers. Nothing that changes state is reachable ov
 | `/metrics` | any (ignored) | see [Metrics](/docs/reference/metrics) |
 | `/api/summary` | | `ansage show summary --json` |
 | `/api/peers` | `peer=ID\|ADDRESS\|ADDRESS:PORT` (optional) | `ansage show peers --json`, `show peer N --json` |
-| `/api/rib` | `prefix=P`, or `family=ipv4\|ipv6` and `limit=N` | `ansage show rib ... --json` |
+| `/api/rib` | `prefix=P`, or `family=ipv4\|ipv6` and `limit=N`; `out=NEIGHBOR` for what a neighbor was sent | `ansage show rib ... --json` |
 | `/api/fib` | | `ansage show fib --json` |
 | `/api/events` | | Server-Sent Events, below |
 

@@ -1,0 +1,207 @@
+---
+title: Transit and filters
+description: Roles (RFC 9234), filters, passing routes on to customers, and a default route for them.
+---
+
+By default ansage sends every neighbor its own prefixes and nothing else (`export = "own"`). To
+pass learned routes on, for example a transit's table to your customers, give each neighbor a
+`role` and an export filter. The roles decide what may go where at all; filters decide what
+goes within that.
+
+## Roles
+
+`role` says what the neighbor is to you:
+
+| `role =` | The neighbor | Gets (at most) |
+|---|---|---|
+| `"provider"` | sells you transit | your own prefixes and your customers' routes |
+| `"customer"` | buys transit from you | everything its export filter passes |
+| `"peer"` | settlement-free peer | your own prefixes and your customers' routes |
+| `"rs"` | an IXP route server | your own prefixes and your customers' routes |
+
+The rule behind it (RFC 9234): routes from providers, peers and route servers only ever go to
+customers, so you never carry traffic between two of your upstreams. No filter can change that.
+Also:
+
+- Routes from a customer may go to every neighbor with a role.
+- Routes learned over iBGP (no role there) may go to customers only.
+- Routes from an eBGP neighbor without a role are never passed on: set its role first.
+- Routes with NO_EXPORT or NO_ADVERTISE (RFC 1997) are never passed on.
+- Roles are for eBGP sessions only. ansage is no route server, so there is no `"rs-client"`.
+
+### On the wire
+
+ansage sends its own role in the OPEN (BGP Role capability): `"customer"` on your side means
+ansage says "provider". If the neighbor sends a role that does not fit, ansage closes the
+session with an OPEN Message Error / Role Mismatch (2/11). A neighbor that sends no role is
+fine, unless `strict_role = true`. `ansage show peer` shows both sides:
+
+```txt
+  Role: customer (RFC 9234), it says: customer
+```
+
+The neighbor configures its own role, which is the same word as yours for it:
+
+| Your `role =` | BIRD on the neighbor | FRR on the neighbor |
+|---|---|---|
+| `"provider"` | `local role provider;` | `neighbor ADDR local-role provider` |
+| `"customer"` | `local role customer;` | `neighbor ADDR local-role customer` |
+| `"peer"` | `local role peer;` | `neighbor ADDR local-role peer` |
+| `"rs"` | `local role rs_server;` | `neighbor ADDR local-role rs-server` |
+
+Routes also carry the Only-To-Customer attribute (OTC): ansage adds it to routes from providers,
+peers and route servers, and to what it sends to customers and peers. A route with OTC never goes
+to a provider, peer or route server, also when it comes back over another router. A customer
+that sends a route with OTC leaks it; ansage drops such routes (and from a peer, OTC with another
+AS than the peer's).
+
+## Filters
+
+A filter is a list of rules. The first rule that matches a route decides; a route no rule
+matches is rejected. `import` and `export` name a filter instead of `"all"` / `"own"`:
+
+```toml title="/etc/ansage/ansage.toml"
+asn = 64500
+router_id = "192.0.2.1"
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+description = "transit"
+role = "provider"
+import = "from-transit"
+export = "to-upstream"
+
+[[neighbor]]
+address = "10.0.2.3"
+asn = 64502
+description = "IXP route server"
+role = "rs"
+import = "all"
+export = "to-upstream"
+
+[[neighbor]]
+address = "10.0.1.2"
+asn = 64510
+description = "customer"
+role = "customer"
+import = "from-customer"
+export = "to-customer"
+default_route = true
+
+# Too short and too long prefixes are not taken from the transit.
+[filter.from-transit]
+[[filter.from-transit.rule]]
+prefixes = ["0.0.0.0/0 le 7", "0.0.0.0/0 ge 25", "::/0 le 15", "::/0 ge 49"]
+action = "reject"
+[[filter.from-transit.rule]]
+action = "accept"
+
+# Only the customer's own prefixes; preferred, and tagged.
+[filter.from-customer]
+[[filter.from-customer.rule]]
+prefixes = ["198.51.100.0/24", "2001:db8:a::/48"]
+origin_as = [64510]
+action = "accept"
+local_pref = 200
+add_communities = ["64500:100"]
+
+# Upstream: our prefixes and our customers' (the tag).
+[filter.to-upstream]
+[[filter.to-upstream.rule]]
+source = "own"
+action = "accept"
+[[filter.to-upstream.rule]]
+communities = ["64500:100"]
+action = "accept"
+
+# The customer gets everything the roles allow.
+[filter.to-customer]
+[[filter.to-customer.rule]]
+action = "accept"
+```
+
+### Rules
+
+Conditions; a rule matches when all its conditions hold, a list when any of its values does:
+
+| Condition | Matches |
+|---|---|
+| `source = "own"` / `"learned"` | our `announce` prefixes / routes from neighbors |
+| `from_role = ["customer"]` | learned from a neighbor with one of these roles |
+| `from_neighbor = ["10.0.1.2"]` | learned from one of these neighbor addresses |
+| `prefixes = ["10.0.0.0/8 le 24"]` | prefix ranges, see below |
+| `origin_as = [64510]` | the last AS of the path (ours for our own prefixes) |
+| `as_path_contains = [64496]` | one of these AS numbers anywhere in the path |
+| `as_path_max_len = 50` | at most this many AS numbers in the path |
+| `communities = ["64500:100"]` | carries one of these communities |
+| `large_communities = ["64500:1:2"]` | carries one of these large communities |
+
+Then `action = "accept"` or `"reject"`, and what an accepting rule changes:
+
+| Change | |
+|---|---|
+| `prepend = 2` | export only: our AS this many extra times |
+| `add_communities`, `remove_communities` | `["asn:value", ...]` |
+| `add_large_communities`, `remove_large_communities` | `["global:data1:data2", ...]` |
+| `med = 10` | set the MED (also on eBGP, where ansage otherwise drops it) |
+| `local_pref = 200` | import only: preferred in best path selection (default 100) |
+
+Prefix ranges are written like FRR and Cisco prefix lists:
+
+| Range | Matches |
+|---|---|
+| `"203.0.113.0/24"` | exactly 203.0.113.0/24 |
+| `"10.0.0.0/8 le 24"` | inside 10.0.0.0/8, /8 to /24 |
+| `"10.0.0.0/8 ge 16"` | inside 10.0.0.0/8, /16 to /32 |
+| `"::/0 ge 49"` | any IPv6 prefix longer than /48 |
+
+`ansage check` refuses filters that cannot work: an unknown name, `prepend` in an import filter,
+`local_pref` in an export filter, a rule that rejects and changes the route, and an export
+filter that can pass learned routes on to a neighbor without `role` (limit its accepting rules to
+`source = "own"` for such a neighbor). `none`, `own` and `all` are not filter names. Every field
+is in the [config reference](/docs/reference/config#filter).
+
+<Callout type="info" title="Order of things">
+On import: the built-in checks (malformed, AS loop, next hop), RFC 9234, then the filter. On
+export: the roles and OTC, then the filter on the route as ansage has it, then the usual changes
+for the session (our AS, our next hop) and the rule's changes on top.
+</Callout>
+
+## A default route for customers
+
+`default_route = true` sends a neighbor 0.0.0.0/0 and ::/0 from ansage itself while at least one
+`"provider"` session is up, and withdraws them when the last one goes down. It replaces any
+default route the neighbor would otherwise get, and no filter applies to it. Customers that
+only need a way out don't need your full table: give them `export = "none"` and
+`default_route = true`, or a filter that passes just your own prefixes.
+
+## What a neighbor gets
+
+`ansage show rib --out` lists what ansage sent to one neighbor, with the attributes as the
+neighbor received them:
+
+```sh
+ansage show rib --out 10.0.0.1
+```
+
+```txt
+Sent to 10.0.0.1: 3 prefixes
+  PREFIX           SOURCE  NEXT HOP     AS PATH      ORIGIN  LOCAL PREF  MED  COMMUNITIES
+  192.0.2.0/24     -       10.0.0.2     64500        igp     -           -    -
+  198.51.100.0/24  -       10.0.0.2     64500 64510  igp     -           -    64500:100
+  2001:db8:1::/48  -       2001:db8::2  64500        igp     -           -    -
+```
+
+To see why a route goes somewhere or not, before or after a change, use
+[`ansage test`](/docs/guides/test).
+
+## Changing filters
+
+`ansage reload` applies changed filters, `import`, `export` and `default_route` without closing
+the session. A new export policy re-checks every route for that neighbor and sends the
+difference. A new import policy asks the neighbor to send its routes again (ROUTE-REFRESH,
+RFC 2918), so the new filter sees all of them; a neighbor without route refresh is reconnected
+instead (Cease / Other Configuration Change). `role` and `strict_role` are part of the OPEN: a
+change reconnects the session.

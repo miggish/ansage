@@ -35,6 +35,8 @@ The router needs the same key and GTSM setting, see [Router configs](/docs/guide
   `--operator USER` to that group.
 - **Metrics and API** (`metrics_listen`): include session details and routes, so bind them to an
   address only trusted hosts reach. See [Metrics and API](/docs/guides/metrics-api).
-- **Own prefixes only, for now**: `export = "own"` is the only export policy until re-exporting
-  comes in a later release, and `import = "none"` (RFC 8212) is the default, so nothing learned
-  is used unless you ask for it.
+- **Own prefixes by default**: `export = "own"` and `import = "none"` (RFC 8212) are the
+  defaults, so nothing learned is used or passed on unless you ask for it. Learned routes only go
+  out through a filter, to neighbors with a `role`, and the roles (RFC 9234) keep routes from
+  providers and peers away from other providers and peers. See
+  [Transit and filters](/docs/guides/transit).

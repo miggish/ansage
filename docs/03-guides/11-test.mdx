@@ -1,0 +1,195 @@
+---
+title: Test and shadow test
+description: What ansage would do with a route, step by step; policy tests in CI; running ansage next to your current BGP speaker.
+---
+
+`ansage test` follows one route through everything ansage does with it: the import checks and
+filter, best path selection, the kernel, and the export to every neighbor, each with the reason.
+It uses the same code as the running daemon and changes nothing.
+
+## A route a neighbor could send
+
+`--from` names the neighbor; the prefix comes first:
+
+```sh
+ansage test 198.51.100.0/24 --from 10.0.1.2
+```
+
+```txt
+Route   198.51.100.0/24 from 10.0.1.2
+        AS path 64510, next hop 10.0.1.2
+Import  accepted by the import filter (filter from-customer, rule 1)
+Stored  AS path 64510, next hop 10.0.1.2, local pref 200, communities 64500:100
+Best    yes, of 1 route(s)
+Kernel  no [kernel] for this family
+
+NEIGHBOR  ROLE      SESSION  RESULT    WHY                                                         SENT AS
+10.0.0.1  provider  up       sent      accepted by the export filter (filter to-upstream, rule 2)  AS path 64500 64510, communities 64500:100
+10.0.2.3  rs        up       sent      accepted by the export filter (filter to-upstream, rule 2)  AS path 64500 64510, communities 64500:100
+10.0.1.2  customer  up       not sent  came from this neighbor
+```
+
+(The config is the one from [Transit and filters](/docs/guides/transit).) Without options the
+AS path is the neighbor's AS and the next hop its address; `--as-path "64501 15169"`,
+`--community 64500:1`, `--large-community 64500:1:2`, `--med 10`, `--next-hop ADDR` and `--otc ASN`
+describe the route in more detail. A route from a transit, for example, only goes to the
+customer:
+
+```sh
+ansage test 8.8.8.0/24 --from 10.0.0.1 --as-path "64501 15169"
+```
+
+```txt
+Route   8.8.8.0/24 from 10.0.0.1
+        AS path 64501 15169, next hop 10.0.0.1
+Import  accepted by the import filter (filter from-transit, rule 2)
+Stored  AS path 64501 15169, next hop 10.0.0.1, OTC 64501
+Best    yes, of 1 route(s)
+Kernel  no [kernel] for this family
+
+NEIGHBOR  ROLE      SESSION  RESULT    WHY                                                         SENT AS
+10.0.0.1  provider  up       not sent  came from this neighbor
+10.0.2.3  rs        up       not sent  carries OTC: only for customers (RFC 9234)
+10.0.1.2  customer  up       sent      accepted by the export filter (filter to-customer, rule 1)  AS path 64500 64501 15169, OTC 64501
+```
+
+A rejected route stops at the step that rejects it:
+
+```txt
+Route   198.51.100.0/25 from 10.0.1.2
+        AS path 64510, next hop 10.0.1.2
+Import  rejected: no rule of the import filter matches (filter from-customer)
+```
+
+The best path step puts the tested route in place of what the neighbor sends now: `Best no: the
+route from 10.0.0.1 wins` says another route stays the best one, and the exports then show what
+happens to that one. For a session that is not up, ansage assumes both families and a next hop
+and marks the row `not up*`.
+
+## The route ansage has
+
+Without `--from`, `ansage test` shows the best route ansage has for a prefix, or for the longest
+prefix containing an address, and where it goes:
+
+```sh
+ansage test 192.0.2.0/24        # our own prefix
+ansage test 198.51.100.77       # the route that covers this address
+```
+
+```txt
+Route   192.0.2.0/24 from local (best of 1)
+        AS path (empty)
+Kernel  our own prefix
+
+NEIGHBOR  ROLE      SESSION  RESULT  WHY                                                         SENT AS
+10.0.0.1  provider  up       sent    accepted by the export filter (filter to-upstream, rule 1)  AS path 64500
+10.0.2.3  rs        up       sent    accepted by the export filter (filter to-upstream, rule 1)  AS path 64500
+10.0.1.2  customer  up       sent    accepted by the export filter (filter to-customer, rule 1)  AS path 64500, OTC 64500
+```
+
+## Before a change: `--offline`
+
+`--offline` works from the config file (`--config`) instead of asking the running ansage: no
+learned routes, every session assumed up. Test a changed config before `ansage reload`:
+
+```sh
+ansage test --offline -c /etc/ansage/ansage.toml.new 198.51.100.0/24 --from 10.0.1.2
+```
+
+## Policy tests: `--file`
+
+A file of `[[test]]` entries with what you expect turns your routing policy into tests. `prefix`
+is the route's prefix (or, without `from`, an address), the other fields are the options above;
+`expect` checks the import verdict, whether the route is the best one (`best`), whether it goes
+into the kernel (`installed`), and who gets it:
+
+```toml title="policy-tests.toml"
+[[test]]
+name = "the customer's prefix goes upstream"
+prefix = "198.51.100.0/24"
+from = "10.0.1.2"
+expect.import = "accept"
+expect.sent_to = ["10.0.0.1", "10.0.2.3"]
+
+[[test]]
+name = "nothing longer than the customer's /24"
+prefix = "198.51.100.0/25"
+from = "10.0.1.2"
+expect.import = "reject"
+
+[[test]]
+name = "transit routes only go to the customer"
+prefix = "8.8.8.0/24"
+from = "10.0.0.1"
+as_path = [64501, 15169]
+expect.sent_to = ["10.0.1.2"]
+expect.not_sent_to = ["10.0.2.3"]
+
+[[test]]
+name = "our prefix goes everywhere"
+prefix = "192.0.2.0/24"
+expect.sent_to = ["10.0.0.1", "10.0.2.3", "10.0.1.2"]
+```
+
+```sh
+ansage test --offline -c ansage.toml --file policy-tests.toml
+```
+
+```txt
+ok    the customer's prefix goes upstream
+ok    nothing longer than the customer's /24
+ok    transit routes only go to the customer
+ok    our prefix goes everywhere
+4 passed, 0 failed
+```
+
+The exit code is 1 when a test fails, so the same command checks a config change in CI before
+it reaches a router. `--json` gives every result as JSON.
+
+## Shadow testing
+
+To find out whether ansage would do the same as the BGP speaker you run now, run it next to it
+with the same neighbors and compare, without letting it change anything:
+
+<Steps>
+<Step>
+
+### Receive, send nothing
+
+Give every neighbor `export = "none"`: the session only receives (End-of-RIB is still sent), so
+your routers see no announcements from ansage. Keep `import` as it would be in production, e.g.
+the same filters.
+
+</Step>
+<Step>
+
+### Install into a table of its own (optional)
+
+With `[kernel]` and `table = 100` (any table no one else uses), ansage installs its best routes
+there instead of the main table. `ip route show table 100 proto bgp` next to
+`ip route show table main proto bird` (or `proto bgp` for FRR) shows where the two differ.
+
+</Step>
+<Step>
+
+### Compare
+
+- Best routes: `ansage show rib PREFIX` next to `birdc show route PREFIX all` or
+  `vtysh -c "show bgp ipv4 unicast PREFIX"`.
+- What a neighbor would get: `ansage test PREFIX` (its `SENT AS` column) next to
+  `birdc show route export PROTOCOL` or `vtysh -c "show bgp ipv4 unicast neighbors ADDR advertised-routes"`.
+- Over many prefixes: `ansage test --json` per prefix and compare in a script; the end-to-end
+  tests do exactly that against BIRD (scenario P4).
+
+</Step>
+<Step>
+
+### Switch
+
+When the results match, switch the neighbors' `export` to the real filters and
+`ansage reload`: the sessions stay up and the routes go out.
+
+</Step>
+</Steps>
+
+After the switch, `ansage show rib --out NEIGHBOR` shows what each neighbor actually got.

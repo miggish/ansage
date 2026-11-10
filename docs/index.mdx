@@ -1,11 +1,13 @@
 ---
 title: Introduction
-description: ansage announces your own prefixes over BGP. Re-exporting routes is planned.
+description: ansage announces your own prefixes over BGP, and with filters and roles passes routes on to customers.
 ---
 
 ansage is a BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
-range) to one or more routers. For now it only announces: it does not re-export routes yet.
-With `[kernel]` it installs the best routes it learns into the Linux routing table.
+range) to one or more routers. By default that is all it sends; with
+[roles and filters](/docs/guides/transit) it also passes learned routes on, e.g. a transit's
+table to your customers. With `[kernel]` it installs the best routes it learns into the Linux
+routing table.
 
 ```toml title="/etc/ansage/ansage.toml"
 asn = 64500
@@ -23,14 +25,16 @@ asn = 64501
 - Drains a site (RFC 8326) before maintenance, so traffic moves without a hard withdraw.
 - Upgrades without dropping routes (`ansage upgrade`, Graceful Restart).
 - Optionally installs the best learned routes into the Linux routing table (`[kernel]`).
+- Passes routes on to customers with filters and BGP roles (RFC 9234), which block route leaks.
+- Explains what it does with a route, step by step, before you change anything (`ansage test`).
 - Reports through `ansage show`, Prometheus metrics, a JSON API and live events.
 
-## What it does not do (yet)
+## What it does not do
 
-<Callout type="info" title="No re-export yet">
-ansage starts with announcing: it exports only its own prefixes (`export = "own"`) and does not
-pass learned routes on yet. Re-exporting is planned for a later release. Health checks live
-outside ansage, see [Health checks](/docs/guides/health-checks).
+<Callout type="info" title="No route reflection, no route server">
+ansage passes learned routes on only to eBGP neighbors with a role, and only within what the
+roles allow. It is no route reflector, no route server and knows no confederations. Health checks
+live outside ansage, see [Health checks](/docs/guides/health-checks).
 </Callout>
 
 ## Where to go
@@ -50,6 +54,12 @@ outside ansage, see [Health checks](/docs/guides/health-checks).
   </Card>
   <Card title="Drain a site" href="/docs/guides/drain">
     Move traffic away before maintenance.
+  </Card>
+  <Card title="Transit and filters" href="/docs/guides/transit">
+    Providers, customers and peers; what goes where.
+  </Card>
+  <Card title="Test and shadow test" href="/docs/guides/test">
+    What ansage would do with a route, before it does.
   </Card>
   <Card title="Troubleshooting" href="/docs/guides/troubleshooting">
     A session does not come up, a prefix is missing.

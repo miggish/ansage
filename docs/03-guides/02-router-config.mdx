@@ -118,5 +118,20 @@ If ansage uses `password` / `password_file` or `ttl_security`, the router needs 
 | TCP-MD5 | `neighbor 10.201.11.10 password SECRET` | `password "SECRET";` |
 | GTSM | `neighbor 10.201.11.10 ttl-security hops 1` | `ttl security on;` |
 
+## BGP Role
+
+With `role` on the ansage side (RFC 9234), the router can check it: it sets its own role, which
+is the same word as ansage's `role` for it. Usually the router is ansage's upstream
+(`role = "provider"` on the ansage side):
+
+| | FRR | BIRD |
+|---|---|---|
+| Role | `neighbor 10.201.11.10 local-role provider` | `local role provider;` |
+| Refuse a neighbor without role | `... local-role provider strict-mode` | `require roles;` |
+
+A role that does not fit closes the session (Role Mismatch, 2/11). See
+[Transit and filters](/docs/guides/transit#roles).
+
 Every line on this page runs in ansage's end-to-end tests (`test/e2e/scenarios/negotiation.sh`
-N16, N17, N22 and `graceful.sh` G1, G7, G8). See [Securing sessions](/docs/guides/security).
+N16, N17, N22, `graceful.sh` G1, G7, G8 and `policy.sh` P1, P2), except FRR's role lines and
+BIRD's `require roles`. See [Securing sessions](/docs/guides/security).

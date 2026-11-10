@@ -14,10 +14,17 @@ A reload re-reads the file and applies only what changed:
 | added neighbor | connects |
 | removed neighbor | gets Cease 6/3 |
 | changed neighbor | reconnects with Cease 6/6 |
-| new `description` | nothing on the wire |
+| new `import`, `export`, `default_route`, or a changed filter it uses | applied to the running session, see below |
+| new `description` or `install` | nothing on the wire |
 | own prefixes | follow the difference between the old and the new file |
 
 Because own prefixes follow the difference, a prefix withdrawn at runtime stays withdrawn.
+
+A new export policy re-checks every route for that neighbor and sends only the difference. For a
+new import policy, ansage asks the neighbor to send its routes again (ROUTE-REFRESH), so the new
+filter sees them all; a neighbor without route refresh is reconnected instead. `ansage reload` lists these
+neighbors under "Neighbors updated without reconnecting". To see what a changed filter will do
+before you reload, use [`ansage test --offline`](/docs/guides/test#before-a-change---offline).
 
 <Callout type="warn" title="Needs a restart">
 `asn`, `router_id`, `listen`, `control_socket` and `metrics_listen` need a restart; a reload

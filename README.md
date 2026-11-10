@@ -1,11 +1,13 @@
 # ansage
 
 BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
-range) to one or more routers. It does not re-export routes yet (planned); with
-`[kernel]` it installs the best routes it learns into the Linux routing table.
+range) to one or more routers. With roles (RFC 9234) and filters it passes routes
+on to customers; with `[kernel]` it installs the best routes it learns into the
+Linux routing table.
 
 - Runtime `ansage announce` / `ansage withdraw`, for health checks
 - Drain (RFC 8326) before maintenance, upgrades without dropping routes (Graceful Restart)
+- Filters and BGP roles that block route leaks; `ansage test` shows what happens to a route
 - TCP-MD5, GTSM, Prometheus metrics, JSON API and live events
 - Tested end to end against FRR and BIRD with real traffic
 
@@ -34,7 +36,7 @@ The docs are in [`docs/`](docs/) and published as a website
 (`website/`):
 
 - [Install](docs/01-getting-started/01-install.mdx) and [first session](docs/01-getting-started/02-first-session.mdx); [how ansage works](docs/02-concepts/01-how-it-works.mdx)
-- Guides: [anycast](docs/03-guides/01-anycast.mdx), [router configs (FRR, BIRD)](docs/03-guides/02-router-config.mdx), [next hops](docs/03-guides/03-next-hops.mdx), [health checks](docs/03-guides/04-health-checks.mdx), [drain](docs/03-guides/05-drain.mdx), [one neighbor down](docs/03-guides/06-peer-maintenance.mdx), [reload](docs/03-guides/07-reload.mdx), [upgrades](docs/03-guides/08-upgrades.mdx), [learn routes](docs/03-guides/09-learn-routes.mdx), [kernel routes](docs/03-guides/10-kernel-routes.mdx), [metrics and API](docs/03-guides/11-metrics-api.mdx), [security](docs/03-guides/12-security.mdx), [without systemd](docs/03-guides/13-without-systemd.mdx), [troubleshooting](docs/03-guides/14-troubleshooting.mdx)
+- Guides: [anycast](docs/03-guides/01-anycast.mdx), [router configs (FRR, BIRD)](docs/03-guides/02-router-config.mdx), [next hops](docs/03-guides/03-next-hops.mdx), [health checks](docs/03-guides/04-health-checks.mdx), [drain](docs/03-guides/05-drain.mdx), [one neighbor down](docs/03-guides/06-peer-maintenance.mdx), [reload](docs/03-guides/07-reload.mdx), [upgrades](docs/03-guides/08-upgrades.mdx), [learn routes](docs/03-guides/09-learn-routes.mdx), [transit and filters](docs/03-guides/10-transit.mdx), [test and shadow test](docs/03-guides/11-test.mdx), [kernel routes](docs/03-guides/12-kernel-routes.mdx), [metrics and API](docs/03-guides/13-metrics-api.mdx), [security](docs/03-guides/14-security.mdx), [without systemd](docs/03-guides/15-without-systemd.mdx), [troubleshooting](docs/03-guides/16-troubleshooting.mdx)
 - Reference: [config](docs/04-reference/01-config.mdx) (generated from the doc comments in `crates/ansage/src/config.rs`), [CLI](docs/04-reference/02-cli.mdx), [HTTP API](docs/04-reference/03-http-api.mdx), [metrics](docs/04-reference/04-metrics.mdx), [signals, exit codes, files](docs/04-reference/05-runtime.mdx), [standards](docs/04-reference/06-standards.mdx)
 - Development: [crates](docs/05-development/01-crates.mdx), [end-to-end tests](docs/05-development/02-e2e.mdx)
 

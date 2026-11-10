@@ -18,7 +18,9 @@ max_prefixes_ipv4 = 1000     # optional limits, see below
 max_prefixes_ipv6 = 1000
 ```
 
-Apply with `ansage reload`; the session reconnects with the new policy.
+Apply with `ansage reload`; the session stays up and ansage asks the neighbor to send its routes
+again (route refresh). To keep only some routes, `import` names a
+[filter](/docs/guides/transit#filters) instead of `"all"`.
 
 ## Look them up
 

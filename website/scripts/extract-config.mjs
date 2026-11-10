@@ -44,8 +44,12 @@ function tomlType(type) {
 	if (/^u\d+$/.test(inner)) return "integer";
 	if (inner === "bool") return "boolean";
 	if (inner.startsWith("Vec<")) return "array";
-	if (inner === "ImportPolicy") return '"none" | "all"';
-	if (inner === "ExportPolicy") return '"own"';
+	if (inner === "ImportPolicy") return '"none" | "all" | filter name';
+	if (inner === "ExportPolicy") return '"own" | "none" | filter name';
+	if (inner === "NeighborRole")
+		return '"provider" | "customer" | "peer" | "rs"';
+	if (inner === "RouteSource") return '"own" | "learned"';
+	if (inner === "Action") return '"accept" | "reject"';
 	return "string";
 }
 
@@ -91,7 +95,7 @@ const sections = [
 		title: "Global settings",
 		table: null,
 		fields: struct("Config").filter(
-			(f) => !["kernel", "neighbor"].includes(f.name),
+			(f) => !["kernel", "neighbor", "filter"].includes(f.name),
 		),
 	},
 	{
@@ -105,6 +109,12 @@ const sections = [
 		title: "[kernel]",
 		table: "kernel",
 		fields: struct("Kernel"),
+	},
+	{
+		id: "filter",
+		title: "[[filter.NAME.rule]]",
+		table: "filter.NAME.rule",
+		fields: struct("Rule"),
 	},
 ];
 

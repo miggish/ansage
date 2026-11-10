@@ -16,10 +16,10 @@ thread that writes routes into the kernel.
    |               |                |
    +---- import ---+----> RIB <-----+
                            |
-              export "own" | best routes
+                export     | best routes
                  v         v
-          to every     [kernel] (optional)
-          neighbor     ip route ... proto bgp
+          per neighbor  [kernel] (optional)
+                        ip route ... proto bgp
 ```
 
 ## Sessions
@@ -31,12 +31,13 @@ connect, or when the neighbor shuts the session down, the delay doubles up to
 but only from configured neighbor addresses; a `passive` neighbor is never connected to.
 
 Every session negotiates IPv4 and IPv6 unicast, 4-octet AS numbers, route refresh, extended
-messages and, if enabled, Graceful Restart. Both families run over one session, IPv4 or IPv6,
+messages and, if enabled, Graceful Restart and the BGP Role (RFC 9234). Both families run over one session, IPv4 or IPv6,
 see [Next hops](/docs/guides/next-hops).
 
 ## Own prefixes
 
-The prefixes in `announce` are ansage's own. They go to every neighbor, are the best route for
+The prefixes in `announce` are ansage's own. They go to every neighbor (unless its `export`
+says otherwise), are the best route for
 their prefix whatever a neighbor sends, and never go into the kernel. `ansage announce` and
 `ansage withdraw` change the set at runtime until the next restart; a reload applies only what
 changed in the file, so runtime changes survive it.
@@ -45,11 +46,17 @@ changed in the file, so runtime changes survive it.
 
 | Direction | Setting | Values |
 |---|---|---|
-| from a neighbor | `import` | `none` (default, RFC 8212): nothing is stored; `all`: every valid route is stored |
-| to a neighbor | `export` | `own` (only value): our own prefixes, never learned routes |
+| from a neighbor | `import` | `none` (default, RFC 8212): nothing is stored; `all`: every valid route is stored; a filter name |
+| to a neighbor | `export` | `own` (default): our own prefixes; `none`: nothing; a filter name |
 
-Because of `export = "own"`, ansage cannot become a transit AS by accident. Re-exporting learned
-routes is planned for a later release.
+With the defaults ansage cannot become a transit AS by accident: learned routes only go out
+through a filter, only to neighbors with a `role`, and routes from providers, peers and route
+servers only ever go to customers. See [Transit and filters](/docs/guides/transit).
+
+On the way out, ansage adds its AS to the path and sets itself as the next hop (eBGP), drops
+LOCAL_PREF and MED towards eBGP neighbors (a filter can set MED again), and marks a passed-on
+attribute it does not know as partial. `ansage show rib --out NEIGHBOR` shows exactly what a
+neighbor got.
 
 A route is not stored when its AS path contains ansage's own AS (a loop), and UPDATEs with
 broken attributes are handled per RFC 7606: treated as a withdraw, or the bad attribute is
@@ -61,8 +68,9 @@ Of all routes for one prefix, ansage picks one in this order:
 
 1. Own prefixes beat anything learned.
 2. A route whose next hop is unreachable (with `[kernel]`) is ranked last.
-3. Highest LOCAL_PREF. It only counts on iBGP; a route with GRACEFUL_SHUTDOWN counts as LOCAL_PREF 0,
-   also on eBGP (RFC 8326).
+3. Highest LOCAL_PREF (default 100). An eBGP neighbor's LOCAL_PREF is dropped on receipt, so on
+   an eBGP route it comes from an import filter. A route with GRACEFUL_SHUTDOWN counts as
+   LOCAL_PREF 0, also on eBGP (RFC 8326).
 4. Shortest AS path.
 5. Lowest ORIGIN (IGP, EGP, incomplete).
 6. Lowest MED among routes from the same neighbor AS (a missing MED is 0).
