@@ -130,6 +130,13 @@ impl Prefix {
         }
     }
 
+    pub fn prefix_len(&self) -> u8 {
+        match self {
+            Prefix::V4(p) => p.prefix_len(),
+            Prefix::V6(p) => p.prefix_len(),
+        }
+    }
+
     /// Bytes this prefix takes in NLRI encoding.
     pub fn encoded_len(&self) -> usize {
         match self {

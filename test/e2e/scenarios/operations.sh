@@ -265,7 +265,7 @@ scn_O9() {
         fail "reload failed: $out"
     log "$out"
     grep -q '^Neighbors added: 10.201.0.3:179$' <<<"$out" || fail "reload output: $out"
-    grep -q '^Descriptions updated: 10.201.0.2:179$' <<<"$out" || fail "reload output: $out"
+    grep -q '^Neighbors updated without reconnecting: 10.201.0.2:179$' <<<"$out" || fail "reload output: $out"
     grep -q '^Prefixes announced: 198.18.1.0/24$' <<<"$out" || fail "reload output: $out"
     wait_until 15 bird_established r2 srv_c || fail "added neighbor r2 did not come up"
     wait_until 10 frr_has_path_from r1 198.18.1.0/24 10.201.0.10 || fail "r1 did not learn the new prefix"

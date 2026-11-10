@@ -37,6 +37,16 @@ pub(super) fn peer(p: &Value, now: u64) -> String {
         text(&n["max_prefixes_ipv4"]),
         text(&n["max_prefixes_ipv6"]),
     );
+    if let Some(role) = n["role"].as_str() {
+        let mut line = format!("  Role: {role} (RFC 9234)");
+        if let Some(sent) = s["session"]["peer_role"].as_str() {
+            let _ = write!(line, ", it says: {sent}");
+        }
+        if n["default_route"] == true {
+            line.push_str(", gets a default route");
+        }
+        let _ = writeln!(out, "{line}");
+    }
     let mut security = Vec::new();
     if n["tcp_md5"].as_bool() == Some(true) {
         security.push("TCP-MD5".to_string());

@@ -5,7 +5,7 @@ use std::{
     sync::mpsc as std_mpsc,
 };
 
-use crate::config::ImportPolicy;
+use crate::policy::Import;
 
 use ansage_bgp::wire::Afi;
 
@@ -65,7 +65,7 @@ impl Rib {
             .config
             .peers
             .iter()
-            .filter(|(_, s)| s.install && s.import == ImportPolicy::All)
+            .filter(|(_, s)| s.install && s.import != Import::None)
             .map(|(&peer, _)| peer)
             .collect();
         self.fib = Some(FibOut {

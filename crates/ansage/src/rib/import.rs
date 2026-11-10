@@ -1,8 +1,8 @@
 //! Routes from peers: UPDATEs into the Loc-RIB, with the max-prefix limits.
 
-use std::net::IpAddr;
+use std::{borrow::Cow, collections::BTreeMap, net::IpAddr};
 
-use crate::config::ImportPolicy;
+use crate::policy::{self, Import, RouteView};
 use ansage_bgp::wire::{
     Afi, NextHop, Notification, PathAttr, Prefix, Safi, Update, cease_subcode, error_code,
 };
@@ -19,7 +19,7 @@ use super::{
 
 /// Multicast and reserved space: 224.0.0.0/3 (multicast, class E) and
 /// ff00::/8.
-fn reserved(prefix: &Prefix) -> bool {
+pub(super) fn reserved(prefix: &Prefix) -> bool {
     match prefix {
         Prefix::V4(p) => p.prefix_len() >= 3 && u32::from(p.addr()) >> 29 == 0b111,
         Prefix::V6(p) => p.prefix_len() >= 8 && p.addr().octets()[0] == 0xff,
@@ -68,7 +68,7 @@ impl Rib {
             }
             return;
         }
-        if self.peers[&peer].settings.import == ImportPolicy::None {
+        if self.peers[&peer].settings.import == Import::None {
             return;
         }
 
@@ -92,68 +92,154 @@ impl Rib {
 
         // Routes that may not be used replace (withdraw) older routes for
         // the same prefixes. The peer task already logged RFC 7606 errors.
-        let local = self.peers[&peer].up.local_addr;
-        let ineligible = if update.treat_as_withdraw.is_some() {
-            Some("malformed UPDATE (RFC 7606)")
-        } else if as_loop(&update.attrs, self.config.local_asn) {
-            // RFC 4271 §9.1.2: our own AS in the path.
-            Some("AS loop")
-        } else {
-            None
-        };
-        // RFC 4271 §6.3: a next hop that is our own address is unusable. Ours
-        // are the session address and every next hop we announce on this
-        // session, in either family.
-        let up = &self.peers[&peer].up;
-        let ours = |addr: IpAddr| {
-            let addr = addr.to_canonical();
-            addr == local.to_canonical()
-                || up.next_hop_ipv4.map(IpAddr::V4) == Some(addr)
-                || up.next_hop_ipv6.map(IpAddr::V6) == Some(addr)
-                || up.next_hop_ipv6_link_local.map(IpAddr::V6) == Some(addr)
-        };
-        let own_classic_next_hop = update
-            .attrs
-            .iter()
-            .any(|a| matches!(a, PathAttr::NextHop(nh) if ours(IpAddr::V4(*nh))));
-        // MP_REACH routes: IPv6, and IPv4 with an IPv4 or (RFC 8950) IPv6 next
-        // hop.
-        let own_mp_next_hop = reach.is_some_and(|m| match m.next_hop {
-            NextHop::V6 { global, link_local } => {
-                ours(IpAddr::V6(global)) || link_local.is_some_and(|ll| ours(IpAddr::V6(ll)))
-            }
-            NextHop::V4(addr) => ours(IpAddr::V4(addr)),
-        });
-        let classic_reason =
-            ineligible.or(own_classic_next_hop.then_some("next hop is our address"));
-        let mp_reason = ineligible.or(own_mp_next_hop.then_some("next hop is our address"));
+        let malformed = update.treat_as_withdraw.is_some();
+        let classic = self.eligible(peer, &update.attrs, malformed, None);
+        let mp = self.eligible(peer, &update.attrs, malformed, reach.map(|m| &m.next_hop));
 
         // RFC 4271 §4.3: withdrawals first, so a prefix listed as withdrawn
         // and announced in the same UPDATE ends up announced.
         for prefix in withdrawn {
             self.withdraw(peer, prefix);
         }
-        for (prefixes, reason, next_hop) in [
-            (announced, classic_reason, None),
-            (mp_announced, mp_reason, reach.map(|m| &m.next_hop)),
+        for (prefixes, eligible, next_hop) in [
+            (announced, classic, None),
+            (mp_announced, mp, reach.map(|m| &m.next_hop)),
         ] {
             if prefixes.is_empty() {
                 continue;
             }
-            match reason {
-                Some(reason) => {
+            match eligible {
+                Err(reason) => {
                     debug!(peer, routes = prefixes.len(), reason, "routes not eligible");
                     for prefix in prefixes {
                         self.withdraw(peer, prefix);
                     }
                 }
-                None => {
-                    let attrs = self.pool.intern(&update.attrs, next_hop);
-                    self.announce(peer, attrs, &prefixes);
-                }
+                Ok(attrs) => self.import(peer, &attrs, next_hop, prefixes),
             }
         }
         self.check_limits(peer, out);
+    }
+
+    /// Whether routes with `attrs` from `peer` may be used at all, and the
+    /// attributes they are stored with (RFC 9234 adds OTC). `mp_next_hop`
+    /// for MP_REACH routes, else the NEXT_HOP attribute counts.
+    pub(super) fn eligible<'a>(
+        &self,
+        peer: SourceId,
+        attrs: &'a [PathAttr],
+        malformed: bool,
+        mp_next_hop: Option<&NextHop>,
+    ) -> Result<Cow<'a, [PathAttr]>, &'static str> {
+        if malformed {
+            return Err("malformed UPDATE (RFC 7606)");
+        }
+        // RFC 4271 §9.1.2: our own AS in the path.
+        if as_loop(attrs, self.config.local_asn) {
+            return Err("AS loop");
+        }
+        // RFC 4271 §6.3: a next hop that is our own address is unusable. Ours
+        // are the session address and every next hop we announce on this
+        // session, in either family.
+        if let Some(state) = self.peers.get(&peer) {
+            let up = &state.up;
+            let ours = |addr: IpAddr| {
+                let addr = addr.to_canonical();
+                addr == up.local_addr.to_canonical()
+                    || up.next_hop_ipv4.map(IpAddr::V4) == Some(addr)
+                    || up.next_hop_ipv6.map(IpAddr::V6) == Some(addr)
+                    || up.next_hop_ipv6_link_local.map(IpAddr::V6) == Some(addr)
+            };
+            // MP_REACH routes: IPv6, and IPv4 with an IPv4 or (RFC 8950)
+            // IPv6 next hop.
+            let own_next_hop = match mp_next_hop {
+                Some(NextHop::V6 { global, link_local }) => {
+                    ours(IpAddr::V6(*global)) || link_local.is_some_and(|ll| ours(IpAddr::V6(ll)))
+                }
+                Some(NextHop::V4(addr)) => ours(IpAddr::V4(*addr)),
+                None => attrs
+                    .iter()
+                    .any(|a| matches!(a, PathAttr::NextHop(nh) if ours(IpAddr::V4(*nh)))),
+            };
+            if own_next_hop {
+                return Err("next hop is our address");
+            }
+        }
+        // RFC 9234 §5 ingress: leaks are ineligible, routes from providers,
+        // peers and route servers get OTC.
+        let settings = self.config.peers.get(&peer);
+        let role = settings.and_then(|s| s.role);
+        let asn = settings.map_or(0, |s| s.asn);
+        match policy::ingress(role, asn, attrs)? {
+            Some(otc) => {
+                let mut attrs = attrs.to_vec();
+                attrs.push(otc);
+                attrs.sort_by_key(PathAttr::type_code);
+                Ok(Cow::Owned(attrs))
+            }
+            None => Ok(Cow::Borrowed(attrs)),
+        }
+    }
+
+    /// Runs `prefixes` with `attrs` from `peer` through its import policy:
+    /// accepted routes go into the tables (changed by the rule that accepted
+    /// them), rejected ones replace (withdraw) what the peer sent before.
+    fn import(
+        &mut self,
+        peer: SourceId,
+        attrs: &[PathAttr],
+        next_hop: Option<&NextHop>,
+        prefixes: Vec<Prefix>,
+    ) {
+        let state = &self.peers[&peer];
+        let Import::Filter(filter) = &state.settings.import else {
+            let id = self.pool.intern(attrs, next_hop);
+            self.announce(peer, id, &prefixes);
+            return;
+        };
+        let filter = filter.clone();
+        let source = self.policy_source(peer);
+        let local_asn = self.config.local_asn;
+        // By the accepting rule: its changes are the same for all of them.
+        let mut accepted: BTreeMap<usize, Vec<Prefix>> = BTreeMap::new();
+        let mut rejected = Vec::new();
+        for prefix in prefixes {
+            let view = RouteView {
+                prefix,
+                source,
+                attrs,
+                local_asn,
+            };
+            match filter.verdict(&view) {
+                policy::Verdict {
+                    accept: true,
+                    rule: Some(rule),
+                } => accepted.entry(rule).or_default().push(prefix),
+                _ => rejected.push(prefix),
+            }
+        }
+        if !rejected.is_empty() {
+            debug!(
+                peer,
+                filter = filter.name,
+                routes = rejected.len(),
+                "routes rejected on import"
+            );
+        }
+        for prefix in rejected {
+            self.withdraw(peer, prefix);
+        }
+        for (rule, prefixes) in accepted {
+            let rule = &filter.rules[rule];
+            let id = if rule.changes() {
+                let mut changed = attrs.to_vec();
+                policy::apply(rule, &mut changed, local_asn);
+                self.pool.intern(&changed, next_hop)
+            } else {
+                self.pool.intern(attrs, next_hop)
+            };
+            self.announce(peer, id, &prefixes);
+        }
     }
 
     /// Inserts `prefixes` from `peer` with the interned set `attrs`

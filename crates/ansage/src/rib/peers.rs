@@ -11,8 +11,20 @@ use ansage_bgp::wire::Prefix;
 use ansage_bgp::wire::Safi;
 use tracing::{info, warn};
 
+use std::time::Duration;
+
+use ansage_bgp::wire::{Notification, cease_subcode, error_code};
+use bytes::Bytes;
+
+use crate::{
+    config::NeighborRole,
+    policy::{Export, Import},
+};
+
 use super::{
-    Outbound, PeerState, Rib, STALE_PATH_TIME, Stale, family_index, msg::PeerUp, prefer,
+    Outbound, PeerState, Rib, STALE_PATH_TIME, Stale, family_index,
+    msg::{PeerMsg, PeerSettings, PeerUp},
+    prefer,
     table::SourceId,
 };
 
@@ -43,18 +55,28 @@ impl Rib {
                 state.out.eor_pending.push(afi);
             }
         }
-        // Everything this peer may get is new to it.
-        state
-            .out
-            .dirty
-            .extend(self.v4.iter_best().map(|(p, _)| Prefix::V4(p)));
-        state
-            .out
-            .dirty
-            .extend(self.v6.iter_best().map(|(p, _)| Prefix::V6(p)));
+        // Everything this peer may get is new to it. A peer that gets
+        // nothing only needs its End-of-RIB (no walk over a full table).
+        if state.settings.export != Export::None {
+            state
+                .out
+                .dirty
+                .extend(self.v4.iter_best().map(|(p, _)| Prefix::V4(p)));
+            state
+                .out
+                .dirty
+                .extend(self.v6.iter_best().map(|(p, _)| Prefix::V6(p)));
+        }
+        if state.settings.default_route {
+            state.out.dirty.extend(super::export::default_routes());
+        }
+        let provider = state.settings.role == Some(NeighborRole::Provider);
         if let Some(old) = self.peers.insert(peer, state) {
             warn!(peer, "peer came up twice without going down");
             self.release_outbound(old.out);
+        }
+        if provider {
+            self.default_routes_dirty();
         }
         let families = [Afi::IPV4, Afi::IPV6]
             .into_iter()
@@ -64,6 +86,81 @@ impl Rib {
             sync.up(peer, families);
         }
         self.stale_after_up(peer, now);
+    }
+
+    /// A reload changed `peer`'s settings: they apply to its running
+    /// session without a reset. A new export policy re-checks everything the
+    /// peer has or could get; a new import policy drops its routes (now
+    /// "none") or asks it to send them again (RFC 2918), so the new filter
+    /// sees them all. Without route refresh the session restarts.
+    pub(super) fn policy_changed(
+        &mut self,
+        peer: SourceId,
+        settings: &PeerSettings,
+        out: &mut Vec<(SourceId, PeerMsg)>,
+    ) {
+        let Some(state) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        let old = std::mem::replace(&mut state.settings, settings.clone());
+        if old.export != settings.export || old.default_route != settings.default_route {
+            let advertised: Vec<Prefix> = state.out.advertised.keys().copied().collect();
+            state.out.dirty.extend(advertised);
+            state
+                .out
+                .dirty
+                .extend(self.v4.iter_best().map(|(p, _)| Prefix::V4(p)));
+            state
+                .out
+                .dirty
+                .extend(self.v6.iter_best().map(|(p, _)| Prefix::V6(p)));
+            if old.default_route || settings.default_route {
+                state.out.dirty.extend(super::export::default_routes());
+            }
+            info!(peer, "export policy changed, routes re-checked");
+        }
+        if old.import == settings.import {
+            return;
+        }
+        if settings.import == Import::None {
+            self.stale.remove(&peer);
+            let removed = self.remove_routes(peer, [true, true]);
+            if let Some(state) = self.peers.get_mut(&peer) {
+                state.received = [0; 2];
+            }
+            info!(peer, removed, "import policy is none now, routes removed");
+            return;
+        }
+        let state = &self.peers[&peer];
+        if state.up.info.route_refresh {
+            let families: Vec<Afi> = [Afi::IPV4, Afi::IPV6]
+                .into_iter()
+                .filter(|&afi| state.negotiated(afi))
+                .collect();
+            info!(
+                peer,
+                "import policy changed, asking the peer for its routes again"
+            );
+            out.push((peer, PeerMsg::RouteRefresh(families)));
+        } else {
+            warn!(
+                peer,
+                "import policy changed and the peer does not support route refresh: \
+                 restarting the session"
+            );
+            let notification = Notification::new(
+                error_code::CEASE,
+                cease_subcode::OTHER_CONFIGURATION_CHANGE,
+                Bytes::new(),
+            );
+            out.push((
+                peer,
+                PeerMsg::Teardown {
+                    notification,
+                    retry_after: Duration::ZERO,
+                },
+            ));
+        }
     }
 
     /// RFC 4724 §4.2: the session is back. Stale routes of families the peer
@@ -142,6 +239,9 @@ impl Rib {
         };
         let info = state.source_info();
         self.release_outbound(state.out);
+        if state.settings.role == Some(NeighborRole::Provider) {
+            self.default_routes_dirty();
+        }
         let Some(retain) = retain else {
             self.stale.remove(&peer);
             let removed = self.remove_routes(peer, [true, true]);

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     time::Duration,
@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use ansage_bgp::session::SessionConfig;
 
-use ansage_bgp::wire::Prefix;
+use ansage_bgp::wire::{LargeCommunity, Prefix, Role};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -85,6 +85,9 @@ pub struct Config {
     pub kernel: Option<Kernel>,
     #[serde(default, rename = "neighbor")]
     pub neighbors: Vec<Neighbor>,
+    /// Named filters for a neighbor's `import` and `export`.
+    #[serde(default, rename = "filter")]
+    pub filters: BTreeMap<String, Filter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -118,16 +121,35 @@ pub struct Neighbor {
     /// go out with the IPv6 next hop. A change reconnects the session.
     #[serde(default)]
     pub extended_next_hop: bool,
-    /// Which learned routes are kept: "none" (default, RFC 8212) or "all".
+    /// Which learned routes are kept: "none" (default, RFC 8212), "all", or
+    /// the name of a filter.
     #[serde(default)]
     pub import: ImportPolicy,
     /// Close the session when the neighbor sends more IPv4 prefixes.
     pub max_prefixes_ipv4: Option<u32>,
     /// Close the session when the neighbor sends more IPv6 prefixes.
     pub max_prefixes_ipv6: Option<u32>,
-    /// Which routes this neighbor gets. Only "own" (our prefixes) for now.
+    /// Which routes this neighbor gets: "own" (default, our prefixes),
+    /// "none" (nothing, e.g. to take its routes for a shadow test), or the
+    /// name of a filter. A filter that can pass learned routes on needs
+    /// `role`.
     #[serde(default)]
     pub export: ExportPolicy,
+    /// What the neighbor is to us (RFC 9234): "provider" (we buy transit
+    /// from it), "customer" (it buys transit from us), "peer" or "rs" (an
+    /// IXP route server). Routes learned from providers, peers and route
+    /// servers only ever go to customers. Sent as our BGP Role in the OPEN
+    /// (the opposite one) and checked against the neighbor's. eBGP only; a
+    /// change reconnects the session.
+    pub role: Option<NeighborRole>,
+    /// With `role`: refuse a neighbor that sends no BGP Role (RFC 9234
+    /// strict mode). A change reconnects the session.
+    #[serde(default)]
+    pub strict_role: bool,
+    /// Announce a default route (0.0.0.0/0, ::/0) to this neighbor while a
+    /// neighbor with role "provider" is up, whatever `export` says.
+    #[serde(default)]
+    pub default_route: bool,
     /// TCP-MD5 key shared with the neighbor (RFC 2385).
     #[serde(default, deserialize_with = "md5_key")]
     pub password: Option<Md5Key>,
@@ -153,20 +175,43 @@ pub struct Neighbor {
     pub install: Option<bool>,
 }
 
-/// `[kernel]`: where ansage's routes go.
 /// Which routes a neighbor gets.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
 pub enum ExportPolicy {
     /// Only our own prefixes. Learned routes are never passed on, so ansage
     /// cannot accidentally become a transit AS.
     #[default]
     Own,
+    /// Nothing: the session only receives (End-of-RIB is still sent).
+    None,
+    /// The routes the named filter accepts.
+    Filter(String),
+}
+
+impl From<String> for ExportPolicy {
+    fn from(name: String) -> Self {
+        match name.as_str() {
+            "own" => Self::Own,
+            "none" => Self::None,
+            _ => Self::Filter(name),
+        }
+    }
+}
+
+impl From<ExportPolicy> for String {
+    fn from(policy: ExportPolicy) -> Self {
+        match policy {
+            ExportPolicy::Own => "own".into(),
+            ExportPolicy::None => "none".into(),
+            ExportPolicy::Filter(name) => name,
+        }
+    }
 }
 
 /// Which learned routes are kept.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
 pub enum ImportPolicy {
     /// Nothing is stored. RFC 8212 §3: routes from a neighbor take part in
     /// best path selection only with an explicit import policy.
@@ -174,6 +219,273 @@ pub enum ImportPolicy {
     None,
     /// Every valid route is stored and used.
     All,
+    /// The routes the named filter accepts.
+    Filter(String),
+}
+
+impl From<String> for ImportPolicy {
+    fn from(name: String) -> Self {
+        match name.as_str() {
+            "none" => Self::None,
+            "all" => Self::All,
+            _ => Self::Filter(name),
+        }
+    }
+}
+
+impl From<ImportPolicy> for String {
+    fn from(policy: ImportPolicy) -> Self {
+        match policy {
+            ImportPolicy::None => "none".into(),
+            ImportPolicy::All => "all".into(),
+            ImportPolicy::Filter(name) => name,
+        }
+    }
+}
+
+/// Names `import` and `export` use themselves.
+const RESERVED_FILTER_NAMES: [&str; 3] = ["none", "own", "all"];
+
+/// What a neighbor is to us (RFC 9234 roles, seen from our side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeighborRole {
+    Provider,
+    Customer,
+    Peer,
+    /// An IXP route server.
+    Rs,
+}
+
+impl NeighborRole {
+    /// Our role on the session, as sent in the OPEN.
+    pub fn local(self) -> Role {
+        match self {
+            Self::Provider => Role::CUSTOMER,
+            Self::Customer => Role::PROVIDER,
+            Self::Peer => Role::PEER,
+            Self::Rs => Role::RS_CLIENT,
+        }
+    }
+}
+
+/// `[filter.NAME]`: rules tried in order; the first one that matches
+/// decides. A route no rule matches is rejected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Filter {
+    #[serde(default, rename = "rule")]
+    pub rules: Vec<Rule>,
+}
+
+/// `[[filter.NAME.rule]]`: conditions (all given ones must hold; a list
+/// matches if any element does), then what happens to the route.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    /// "own" (our `announce` prefixes) or "learned" (from neighbors).
+    pub source: Option<RouteSource>,
+    /// Learned from a neighbor with one of these roles.
+    #[serde(default)]
+    pub from_role: Vec<NeighborRole>,
+    /// Learned from one of these neighbor addresses.
+    #[serde(default)]
+    pub from_neighbor: Vec<IpAddr>,
+    /// Prefix ranges, e.g. "203.0.113.0/24" (exactly), "10.0.0.0/8 le 24"
+    /// (/8 to /24 inside 10.0.0.0/8), "::/0 ge 49" (longer than /48).
+    #[serde(default)]
+    pub prefixes: Vec<PrefixRange>,
+    /// The last AS in the AS path (who originated the route).
+    #[serde(default)]
+    pub origin_as: Vec<u32>,
+    /// One of these AS numbers anywhere in the AS path.
+    #[serde(default)]
+    pub as_path_contains: Vec<u32>,
+    /// At most this many AS numbers in the AS path.
+    pub as_path_max_len: Option<u32>,
+    /// Carries one of these communities, e.g. "64500:200".
+    #[serde(default)]
+    pub communities: Vec<Community>,
+    /// Carries one of these large communities, e.g. "64500:1:2".
+    #[serde(default)]
+    pub large_communities: Vec<LargeCommunityValue>,
+    /// "accept" or "reject".
+    pub action: Action,
+    /// Export only: prepend our AS this many extra times.
+    #[serde(default)]
+    pub prepend: u8,
+    #[serde(default)]
+    pub add_communities: Vec<Community>,
+    #[serde(default)]
+    pub remove_communities: Vec<Community>,
+    #[serde(default)]
+    pub add_large_communities: Vec<LargeCommunityValue>,
+    #[serde(default)]
+    pub remove_large_communities: Vec<LargeCommunityValue>,
+    /// Set the MED.
+    pub med: Option<u32>,
+    /// Import only: set LOCAL_PREF (higher wins in best path selection).
+    pub local_pref: Option<u32>,
+}
+
+impl Rule {
+    /// The rule changes the route it accepts.
+    pub fn changes(&self) -> bool {
+        self.prepend > 0
+            || !self.add_communities.is_empty()
+            || !self.remove_communities.is_empty()
+            || !self.add_large_communities.is_empty()
+            || !self.remove_large_communities.is_empty()
+            || self.med.is_some()
+            || self.local_pref.is_some()
+    }
+
+    /// The rule can accept a learned route (not only our own).
+    pub fn accepts_learned(&self) -> bool {
+        self.action == Action::Accept && self.source != Some(RouteSource::Own)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteSource {
+    Own,
+    Learned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Accept,
+    Reject,
+}
+
+/// A prefix and the range of lengths that match inside it, written like
+/// FRR/Cisco prefix lists: "10.0.0.0/8", "10.0.0.0/8 le 24",
+/// "10.0.0.0/8 ge 16", "10.0.0.0/8 ge 16 le 24".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct PrefixRange {
+    pub prefix: Prefix,
+    pub min_len: u8,
+    pub max_len: u8,
+}
+
+impl PrefixRange {
+    pub fn contains(&self, prefix: &Prefix) -> bool {
+        let len = prefix.prefix_len();
+        if len < self.min_len || len > self.max_len {
+            return false;
+        }
+        match (self.prefix, prefix) {
+            (Prefix::V4(range), Prefix::V4(p)) => {
+                let shift = 32 - u32::from(range.prefix_len());
+                let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
+                u32::from(p.addr()) & mask == u32::from(range.addr())
+            }
+            (Prefix::V6(range), Prefix::V6(p)) => {
+                let shift = 128 - u32::from(range.prefix_len());
+                let mask = u128::MAX.checked_shl(shift).unwrap_or(0);
+                u128::from(p.addr()) & mask == u128::from(range.addr())
+            }
+            _ => false,
+        }
+    }
+}
+
+impl TryFrom<String> for PrefixRange {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let mut words = text.split_whitespace();
+        let prefix: Prefix = words
+            .next()
+            .ok_or_else(|| "empty prefix range".to_string())?
+            .parse()
+            .map_err(|err| format!("prefix range {text:?}: {err}"))?;
+        let len = prefix.prefix_len();
+        let max = match prefix {
+            Prefix::V4(_) => 32,
+            Prefix::V6(_) => 128,
+        };
+        let (mut ge, mut le) = (None, None);
+        while let Some(word) = words.next() {
+            let value = words
+                .next()
+                .and_then(|v| v.parse::<u8>().ok())
+                .ok_or_else(|| format!("prefix range {text:?}: {word} needs a length"))?;
+            let slot = match word {
+                "ge" => &mut ge,
+                "le" => &mut le,
+                _ => {
+                    return Err(format!(
+                        "prefix range {text:?}: expected ge or le, got {word}"
+                    ));
+                }
+            };
+            if slot.replace(value).is_some() {
+                return Err(format!("prefix range {text:?}: {word} given twice"));
+            }
+        }
+        let (min_len, max_len) = match (ge, le) {
+            (None, None) => (len, len),
+            (ge, le) => (ge.unwrap_or(len), le.unwrap_or(max)),
+        };
+        if min_len < len || min_len > max_len || max_len > max {
+            return Err(format!(
+                "prefix range {text:?}: needs {len} <= ge <= le <= {max}"
+            ));
+        }
+        Ok(Self {
+            prefix,
+            min_len,
+            max_len,
+        })
+    }
+}
+
+/// A community (RFC 1997) written as "asn:value".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Community(pub u32);
+
+impl TryFrom<String> for Community {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let parsed = text
+            .split_once(':')
+            .and_then(|(high, low)| Some((high.parse::<u16>().ok()?, low.parse::<u16>().ok()?)));
+        let (high, low) = parsed.ok_or_else(|| {
+            format!("community {text:?}: expected two numbers 0-65535 like 64500:200")
+        })?;
+        Ok(Self(u32::from(high) << 16 | u32::from(low)))
+    }
+}
+
+/// A large community (RFC 8092) written as "global:data1:data2".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct LargeCommunityValue(pub LargeCommunity);
+
+impl TryFrom<String> for LargeCommunityValue {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let parts: Vec<Option<u32>> = text.split(':').map(|p| p.parse().ok()).collect();
+        match parts[..] {
+            [Some(global_admin), Some(local_data_1), Some(local_data_2)] => {
+                Ok(Self(LargeCommunity {
+                    global_admin,
+                    local_data_1,
+                    local_data_2,
+                }))
+            }
+            _ => Err(format!(
+                "large community {text:?}: expected three numbers like 64500:1:2"
+            )),
+        }
+    }
 }
 
 /// Longest TCP-MD5 key Linux accepts.
@@ -199,6 +511,7 @@ impl std::fmt::Debug for Md5Key {
     }
 }
 
+/// `[kernel]`: where ansage's routes go.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Kernel {
@@ -296,6 +609,9 @@ const MAX_DRAIN_TIME: u64 = 3600;
 /// Upper bound for `drain_prepend`; a few prepends already lose against
 /// any other path.
 const MAX_DRAIN_PREPEND: u8 = 10;
+
+/// Upper bound for a filter rule's `prepend`, for the same reason.
+const MAX_PREPEND: u8 = 10;
 
 /// Longest unix socket path (Linux sun_path minus the NUL).
 const MAX_SOCKET_PATH: usize = 107;
@@ -409,6 +725,7 @@ impl Config {
                 return invalid(format!("listen address {addr} is given twice"));
             }
         }
+        self.validate_filters()?;
         let mut seen = HashSet::new();
         let mut addresses = HashSet::new();
         for n in &self.neighbors {
@@ -479,6 +796,7 @@ impl Config {
                     n.address
                 ));
             }
+            self.validate_policy(n)?;
             if n.install == Some(true) && self.kernel.is_none() {
                 return invalid(format!(
                     "neighbor {}: install needs a [kernel] section",
@@ -487,6 +805,94 @@ impl Config {
             }
             if !seen.insert(n.socket_addr()) {
                 return invalid(format!("neighbor {} is configured twice", n.socket_addr()));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_filters(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
+        for (name, filter) in &self.filters {
+            if RESERVED_FILTER_NAMES.contains(&name.as_str()) {
+                return invalid(format!(
+                    "filter {name:?}: none, own and all are reserved names"
+                ));
+            }
+            for (i, rule) in filter.rules.iter().enumerate() {
+                let at = format!("filter {name:?} rule {}", i + 1);
+                if rule.action == Action::Reject && rule.changes() {
+                    return invalid(format!("{at}: a rejecting rule cannot change the route"));
+                }
+                if rule.prepend > MAX_PREPEND {
+                    return invalid(format!("{at}: prepend must be at most {MAX_PREPEND}"));
+                }
+                let learned_only = !rule.from_role.is_empty() || !rule.from_neighbor.is_empty();
+                if rule.source == Some(RouteSource::Own) && learned_only {
+                    return invalid(format!(
+                        "{at}: source = \"own\" never matches from_role / from_neighbor"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Import and export of one neighbor: filters exist, fit their use, and
+    /// learned routes only go to neighbors with a role.
+    fn validate_policy(&self, n: &Neighbor) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
+        let ibgp = n.asn == self.asn;
+        if n.role.is_some() && ibgp {
+            return invalid(format!(
+                "neighbor {}: role is for eBGP sessions only (RFC 9234)",
+                n.address
+            ));
+        }
+        if n.strict_role && n.role.is_none() {
+            return invalid(format!("neighbor {}: strict_role needs role", n.address));
+        }
+        if n.default_route
+            && !self
+                .neighbors
+                .iter()
+                .any(|o| o.role == Some(NeighborRole::Provider))
+        {
+            return invalid(format!(
+                "neighbor {}: default_route needs a neighbor with role = \"provider\"",
+                n.address
+            ));
+        }
+        let filter = |field: &str, name: &str, builtin: &str| {
+            self.filters.get(name).ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "neighbor {}: {field} = {name:?}: no filter of that name ({builtin})",
+                    n.address
+                ))
+            })
+        };
+        if let ImportPolicy::Filter(name) = &n.import {
+            let f = filter("import", name, "built in: none, all")?;
+            if f.rules.iter().any(|r| r.prepend > 0) {
+                return invalid(format!(
+                    "neighbor {}: import filter {name:?} uses prepend, which only works on export",
+                    n.address
+                ));
+            }
+        }
+        if let ExportPolicy::Filter(name) = &n.export {
+            let f = filter("export", name, "built in: own, none")?;
+            if f.rules.iter().any(|r| r.local_pref.is_some()) {
+                return invalid(format!(
+                    "neighbor {}: export filter {name:?} sets local_pref, which only works on import",
+                    n.address
+                ));
+            }
+            if n.role.is_none() && f.rules.iter().any(Rule::accepts_learned) {
+                return invalid(format!(
+                    "neighbor {}: export filter {name:?} can pass learned routes on; that needs \
+                     a role (or limit its accepting rules to source = \"own\")",
+                    n.address
+                ));
             }
         }
         Ok(())
@@ -508,6 +914,8 @@ impl Config {
                 .unwrap_or(self.graceful_restart)
                 .then(|| neighbor.restart_time.unwrap_or(self.restart_time)),
             extended_next_hop: neighbor.extended_next_hop,
+            role: neighbor.role.map(NeighborRole::local),
+            strict_role: neighbor.strict_role,
         }
     }
 }
@@ -805,6 +1213,9 @@ mod tests {
         let link_local =
             "[[neighbor]]\naddress = \"192.0.2.2\"\nasn = 64501\nnext_hop_ipv6 = \"fe80::1\"\n";
         assert!(parse(&format!("{base}{link_local}")).is_err());
+        let none = "[[neighbor]]\naddress = \"127.0.0.2\"\nasn = 64501\nexport = \"none\"\n";
+        let config = parse(&format!("{base}{none}")).unwrap();
+        assert_eq!(config.neighbors[0].export, ExportPolicy::None);
         let all = "[[neighbor]]\naddress = \"127.0.0.2\"\nasn = 64501\nexport = \"all\"\n";
         assert!(
             parse(&format!("{base}{all}")).is_err(),
@@ -844,5 +1255,167 @@ mod tests {
         }
         let err = parse(&neighbor_with("install = true")).unwrap_err();
         assert!(err.to_string().contains("needs a [kernel]"), "{err}");
+    }
+
+    #[test]
+    fn prefix_ranges() {
+        let range = |s: &str| PrefixRange::try_from(s.to_string());
+        let r = range("10.0.0.0/8 le 24").unwrap();
+        assert_eq!((r.min_len, r.max_len), (8, 24));
+        assert!(r.contains(&"10.1.0.0/16".parse().unwrap()));
+        assert!(r.contains(&"10.0.0.0/8".parse().unwrap()));
+        assert!(!r.contains(&"10.1.1.0/25".parse().unwrap()));
+        assert!(!r.contains(&"11.0.0.0/16".parse().unwrap()));
+        assert!(!r.contains(&"2001:db8::/32".parse().unwrap()));
+        let exact = range("203.0.113.0/24").unwrap();
+        assert!(exact.contains(&"203.0.113.0/24".parse().unwrap()));
+        assert!(!exact.contains(&"203.0.113.0/25".parse().unwrap()));
+        let r = range("::/0 ge 49").unwrap();
+        assert_eq!((r.min_len, r.max_len), (49, 128));
+        assert!(r.contains(&"2001:db8:1:8000::/49".parse().unwrap()));
+        assert!(!r.contains(&"2001:db8::/48".parse().unwrap()));
+        let r = range("0.0.0.0/0 ge 8 le 24").unwrap();
+        assert_eq!((r.min_len, r.max_len), (8, 24));
+        for bad in [
+            "10.0.0.0/8 le 4",
+            "10.0.0.0/8 ge 25 le 24",
+            "10.0.0.0/8 le 33",
+            "10.0.0.0/8 le",
+            "10.0.0.0/8 eq 9",
+            "10.0.0.0/8 le 9 le 10",
+            "10.0.0.1/8",
+        ] {
+            assert!(range(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn communities() {
+        assert_eq!(
+            Community::try_from("64500:200".to_string()),
+            Ok(Community(64500 << 16 | 200))
+        );
+        assert!(Community::try_from("70000:1".to_string()).is_err());
+        let large = LargeCommunityValue::try_from("4200000000:1:2".to_string()).unwrap();
+        assert_eq!(large.0.global_admin, 4_200_000_000);
+        assert!(LargeCommunityValue::try_from("1:2".to_string()).is_err());
+    }
+
+    const PROVIDER: &str =
+        "[[neighbor]]\naddress = \"192.0.2.9\"\nasn = 64509\nrole = \"provider\"\n";
+
+    #[test]
+    fn roles_and_filters() {
+        let text = format!(
+            r#"{BASE}{PROVIDER}
+            [[neighbor]]
+            address = "192.0.2.2"
+            asn = 64510
+            role = "customer"
+            strict_role = true
+            default_route = true
+            import = "in"
+            export = "out"
+
+            [filter.in]
+            [[filter.in.rule]]
+            prefixes = ["203.0.113.0/24 le 24"]
+            action = "accept"
+            local_pref = 200
+
+            [filter.out]
+            [[filter.out.rule]]
+            action = "accept"
+            prepend = 1
+            "#
+        );
+        let config = parse(&text).unwrap();
+        let n = &config.neighbors[1];
+        assert_eq!(n.role, Some(NeighborRole::Customer));
+        assert_eq!(n.import, ImportPolicy::Filter("in".into()));
+        assert_eq!(n.export, ExportPolicy::Filter("out".into()));
+        let session = config.session(n);
+        assert_eq!(
+            session.role,
+            Some(Role::PROVIDER),
+            "our role is the opposite"
+        );
+        assert!(session.strict_role);
+        assert_eq!(config.filters["in"].rules[0].local_pref, Some(200));
+    }
+
+    #[test]
+    fn invalid_roles_and_filters() {
+        let cases = [
+            ("role = \"rs-client\"", "unknown variant"),
+            ("strict_role = true", "strict_role needs role"),
+            ("default_route = true", "needs a neighbor with role"),
+            (
+                "import = \"missing\"",
+                "import = \"missing\": no filter of that name",
+            ),
+            (
+                "export = \"all-out\"",
+                "can pass learned routes on; that needs",
+            ),
+            (
+                "role = \"customer\"\nimport = \"all-out\"",
+                "prepend, which only works on export",
+            ),
+            (
+                "role = \"customer\"\nexport = \"set-pref\"",
+                "local_pref, which only works on import",
+            ),
+        ];
+        let filters = r#"
+            [filter.all-out]
+            [[filter.all-out.rule]]
+            action = "accept"
+            prepend = 1
+            [filter.set-pref]
+            [[filter.set-pref.rule]]
+            action = "accept"
+            local_pref = 10
+        "#;
+        for (extra, expected) in cases {
+            let err = parse(&format!("{}{filters}", neighbor_with(extra))).unwrap_err();
+            assert!(err.to_string().contains(expected), "{extra}: {err}");
+        }
+        // Role on iBGP.
+        let ibgp =
+            format!("{BASE}[[neighbor]]\naddress = \"192.0.2.2\"\nasn = 64500\nrole = \"peer\"\n");
+        assert!(
+            parse(&ibgp)
+                .unwrap_err()
+                .to_string()
+                .contains("eBGP sessions only")
+        );
+        // An export filter limited to our own routes needs no role.
+        let own_only = r#"
+            [filter.own]
+            [[filter.own.rule]]
+            action = "accept"
+        "#;
+        let err = parse(&format!("{}{own_only}", neighbor_with(""))).unwrap_err();
+        assert!(err.to_string().contains("reserved"), "{err}");
+        let own_only = r#"
+            [filter.mine]
+            [[filter.mine.rule]]
+            source = "own"
+            action = "accept"
+        "#;
+        parse(&format!("{}{own_only}", neighbor_with("export = \"mine\""))).unwrap();
+        // Rules that make no sense.
+        for rule in [
+            "action = \"reject\"\nmed = 1",
+            "action = \"accept\"\nprepend = 11",
+            "action = \"accept\"\nsource = \"own\"\nfrom_role = [\"peer\"]",
+        ] {
+            let text = format!(
+                "{}[filter.x]\n[[filter.x.rule]]\n{rule}\n",
+                neighbor_with("")
+            );
+            assert!(parse(&text).is_err(), "{rule}");
+        }
     }
 }

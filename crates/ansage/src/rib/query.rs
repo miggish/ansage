@@ -48,10 +48,21 @@ impl Rib {
     }
 
     /// Answers a query; a requester that gave up is ignored.
-    pub(super) fn query(&self, query: Query) {
+    pub(super) fn query(&mut self, query: Query) {
         match query {
             Query::Summary(reply) => {
                 let _ = reply.send(self.summary());
+            }
+            Query::Test { query, reply } => {
+                let _ = reply.send(self.trace(query));
+            }
+            Query::AdjOut {
+                peer,
+                afi,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(self.adj_out(peer, afi, limit));
             }
             Query::Prefix { prefix, reply } => {
                 let _ = reply.send(self.candidates(prefix));
@@ -92,6 +103,56 @@ impl Rib {
                 let _ = reply.send(RoutePage { total, routes });
             }
         }
+    }
+
+    /// What `peer` was sent: the outgoing attributes with the session's next
+    /// hops, as the peer received them. Empty while the session is down.
+    fn adj_out(&self, peer: super::SourceId, afi: Afi, limit: usize) -> RoutePage {
+        let Some(state) = self.peers.get(&peer) else {
+            return RoutePage {
+                total: 0,
+                routes: Vec::new(),
+            };
+        };
+        let mut sent: Vec<(Prefix, super::pool::AttrId)> = state
+            .out
+            .advertised
+            .iter()
+            .filter(|(p, _)| p.afi() == afi)
+            .map(|(&p, &id)| (p, id))
+            .collect();
+        let total = sent.len();
+        sent.sort_unstable_by_key(|(p, _)| *p);
+        let up = &state.up;
+        let routes = sent
+            .into_iter()
+            .take(limit)
+            .map(|(prefix, id)| {
+                let mut attrs = self.pool.attrs(id);
+                let mut mp_next_hop =
+                    up.next_hop_ipv6
+                        .map(|global| ansage_bgp::wire::NextHop::V6 {
+                            global,
+                            link_local: up.next_hop_ipv6_link_local,
+                        });
+                if afi == Afi::IPV4
+                    && let Some(hop) = up.next_hop_ipv4
+                {
+                    attrs.push(ansage_bgp::wire::PathAttr::NextHop(hop));
+                    attrs.sort_by_key(ansage_bgp::wire::PathAttr::type_code);
+                    mp_next_hop = None;
+                }
+                RouteInfo {
+                    prefix,
+                    source: super::LOCAL,
+                    best: false,
+                    attrs,
+                    mp_next_hop,
+                    unreachable: false,
+                }
+            })
+            .collect();
+        RoutePage { total, routes }
     }
 
     /// All routes of `prefix`, the best first.
@@ -178,7 +239,7 @@ impl Rib {
         }
     }
 
-    fn route_info(&self, prefix: Prefix, route: Route, best: bool) -> RouteInfo {
+    pub(super) fn route_info(&self, prefix: Prefix, route: Route, best: bool) -> RouteInfo {
         RouteInfo {
             prefix,
             source: route.source,

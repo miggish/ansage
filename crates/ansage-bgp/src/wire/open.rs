@@ -16,6 +16,7 @@ const CAP_MULTIPROTOCOL: u8 = 1;
 const CAP_ROUTE_REFRESH: u8 = 2;
 const CAP_EXTENDED_NEXT_HOP: u8 = 5;
 const CAP_EXTENDED_MESSAGE: u8 = 6;
+const CAP_ROLE: u8 = 9;
 const CAP_GRACEFUL_RESTART: u8 = 64;
 const CAP_FOUR_OCTET_AS: u8 = 65;
 
@@ -38,6 +39,8 @@ pub enum Capability {
     GracefulRestart(GracefulRestart),
     /// RFC 6793
     FourOctetAs(u32),
+    /// RFC 9234: the sender's role on this session.
+    Role(Role),
     Unknown {
         code: u8,
         value: Bytes,
@@ -59,6 +62,7 @@ impl Capability {
             CAP_EXTENDED_MESSAGE => Capability::ExtendedMessage,
             CAP_GRACEFUL_RESTART => Capability::GracefulRestart(GracefulRestart::decode(&mut r)?),
             CAP_FOUR_OCTET_AS => Capability::FourOctetAs(r.u32()?),
+            CAP_ROLE => Capability::Role(Role(r.u8()?)),
             _ => {
                 return Ok(Capability::Unknown {
                     code,
@@ -86,6 +90,7 @@ impl Capability {
                 buf.put_slice(&[CAP_FOUR_OCTET_AS, 4]);
                 buf.put_u32(*asn);
             }
+            Capability::Role(role) => buf.put_slice(&[CAP_ROLE, 1, role.0]),
             Capability::Unknown { code, value } => {
                 // Oversized values fail the parameter length check in
                 // Open::encode_body.
@@ -94,6 +99,44 @@ impl Capability {
                 buf.put_slice(value);
             }
         }
+    }
+}
+
+/// BGP Role (RFC 9234 §4.1, IANA registry): what a speaker is to its
+/// neighbor on one eBGP session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Role(pub u8);
+
+impl Role {
+    pub const PROVIDER: Self = Self(0);
+    /// Route server.
+    pub const RS: Self = Self(1);
+    pub const RS_CLIENT: Self = Self(2);
+    pub const CUSTOMER: Self = Self(3);
+    pub const PEER: Self = Self(4);
+
+    /// The role the other side must have (RFC 9234 §4.2, table 2); `None`
+    /// for unassigned values.
+    pub fn counterpart(self) -> Option<Self> {
+        Some(match self {
+            Self::PROVIDER => Self::CUSTOMER,
+            Self::CUSTOMER => Self::PROVIDER,
+            Self::RS => Self::RS_CLIENT,
+            Self::RS_CLIENT => Self::RS,
+            Self::PEER => Self::PEER,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::PROVIDER => "provider",
+            Self::RS => "rs",
+            Self::RS_CLIENT => "rs-client",
+            Self::CUSTOMER => "customer",
+            Self::PEER => "peer",
+            _ => return None,
+        })
     }
 }
 

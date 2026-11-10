@@ -32,6 +32,7 @@ pub mod type_code {
     pub const AS4_PATH: u8 = 17;
     pub const AS4_AGGREGATOR: u8 = 18;
     pub const LARGE_COMMUNITIES: u8 = 32;
+    pub const ONLY_TO_CUSTOMER: u8 = 35;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -186,6 +187,9 @@ pub enum PathAttr {
     /// RFC 6793
     As4Aggregator(Aggregator),
     LargeCommunities(Vec<LargeCommunity>),
+    /// RFC 9234 OTC: the route may only go to customers (and route server
+    /// clients); the AS that set it.
+    OnlyToCustomer(u32),
     /// Kept as received so it can be passed on. `flags` holds only the
     /// OPTIONAL, TRANSITIVE and PARTIAL bits; the encoder picks the length
     /// format.
@@ -201,9 +205,8 @@ fn expected_flags(code: u8) -> Option<u8> {
     match code {
         ORIGIN | AS_PATH | NEXT_HOP | LOCAL_PREF | ATOMIC_AGGREGATE => Some(TRANSITIVE),
         MULTI_EXIT_DISC | MP_REACH_NLRI | MP_UNREACH_NLRI => Some(OPTIONAL),
-        AGGREGATOR | COMMUNITIES | AS4_PATH | AS4_AGGREGATOR | LARGE_COMMUNITIES => {
-            Some(OPTIONAL | TRANSITIVE)
-        }
+        AGGREGATOR | COMMUNITIES | AS4_PATH | AS4_AGGREGATOR | LARGE_COMMUNITIES
+        | ONLY_TO_CUSTOMER => Some(OPTIONAL | TRANSITIVE),
         _ => None,
     }
 }
@@ -222,6 +225,7 @@ impl PathAttr {
             PathAttr::As4Path(_) => AS4_PATH,
             PathAttr::As4Aggregator(_) => AS4_AGGREGATOR,
             PathAttr::LargeCommunities(_) => LARGE_COMMUNITIES,
+            PathAttr::OnlyToCustomer(_) => ONLY_TO_CUSTOMER,
             PathAttr::Unknown { code, .. } => *code,
         }
     }
@@ -240,7 +244,9 @@ impl PathAttr {
             PathAttr::Origin(origin) => buf.put_u8(*origin as u8),
             PathAttr::AsPath(path) => path.encode(neg.four_octet_as, buf),
             PathAttr::NextHop(addr) => buf.put_slice(&addr.octets()),
-            PathAttr::MultiExitDisc(v) | PathAttr::LocalPref(v) => buf.put_u32(*v),
+            PathAttr::MultiExitDisc(v) | PathAttr::LocalPref(v) | PathAttr::OnlyToCustomer(v) => {
+                buf.put_u32(*v)
+            }
             PathAttr::AtomicAggregate => {}
             PathAttr::Aggregator(agg) => {
                 if neg.four_octet_as {
@@ -720,6 +726,9 @@ fn decode_value(
             communities.dedup();
             PathAttr::LargeCommunities(communities)
         }
+        // RFC 9234 §5: a length other than 4 is treat-as-withdraw (the
+        // default handling for this code).
+        ONLY_TO_CUSTOMER => PathAttr::OnlyToCustomer(r.u32()?),
         MP_REACH_NLRI => {
             let err = DecodeError::OptionalAttribute(raw);
             return Ok(match MpReach::decode(r.rest(), err.clone(), neg)? {

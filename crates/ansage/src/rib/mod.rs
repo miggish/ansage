@@ -26,6 +26,7 @@ mod peers;
 pub mod pool;
 mod query;
 pub mod table;
+mod trace;
 
 pub use export::encode_batch;
 pub use msg::{
@@ -33,6 +34,7 @@ pub use msg::{
     RibSummary, RouteInfo, RoutePage, Stats,
 };
 pub use table::{LOCAL, SourceId};
+pub use trace::{TestQuery, TestRoute, Trace};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -52,7 +54,7 @@ use ansage_bgp::wire::Safi;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::fib::Gateway;
+use crate::{config::NeighborRole, fib::Gateway, policy};
 use fib::FibOut;
 use pool::{AttrId, AttrPool};
 use table::{DecisionProcess, SourceInfo, Table};
@@ -167,6 +169,33 @@ impl Rib {
         self.peers.get(&peer).map(|p| &p.up.tx)
     }
 
+    /// Where a route from `source` came from, as policy sees it.
+    fn policy_source(&self, source: SourceId) -> policy::Source {
+        if source == LOCAL {
+            return policy::Source::Own;
+        }
+        let settings = self.config.peers.get(&source);
+        let role = settings.and_then(|s| s.role);
+        let (addr, ibgp) = match (self.peers.get(&source), self.stale.get(&source), settings) {
+            (Some(state), _, _) => (state.up.addr, state.up.info.negotiated.ibgp),
+            (None, Some(stale), _) => (stale.info.addr, stale.info.ibgp),
+            (None, None, Some(s)) => (
+                s.address.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                s.asn == self.config.local_asn,
+            ),
+            (None, None, None) => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), false),
+        };
+        policy::Source::Learned { addr, role, ibgp }
+    }
+
+    /// A session to a neighbor with role "provider" is up: neighbors with
+    /// `default_route` get one.
+    fn provider_up(&self) -> bool {
+        self.peers
+            .values()
+            .any(|p| p.settings.role == Some(NeighborRole::Provider))
+    }
+
     /// Applies one message; messages for peers go to `out`.
     pub fn handle(&mut self, msg: RibMsg, out: &mut Vec<(SourceId, PeerMsg)>) {
         match msg {
@@ -186,6 +215,7 @@ impl Rib {
                 let after = install(settings.as_ref());
                 match settings {
                     Some(settings) => {
+                        self.policy_changed(peer, &settings, out);
                         self.config.peers.insert(peer, settings);
                     }
                     None => {

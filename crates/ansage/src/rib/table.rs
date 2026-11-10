@@ -268,7 +268,7 @@ pub struct DecisionProcess<'a, F> {
     pub unreachable: &'a HashSet<Gateway>,
 }
 
-/// LOCAL_PREF only means something on iBGP sessions.
+/// LOCAL_PREF of routes without one.
 const DEFAULT_LOCAL_PREF: u32 = 100;
 
 impl<'a, F: Fn(SourceId) -> SourceInfo> Prefer for DecisionProcess<'a, F> {
@@ -295,16 +295,16 @@ impl<'a, F: Fn(SourceId) -> SourceInfo> Prefer for DecisionProcess<'a, F> {
                     .is_some_and(|hop| self.unreachable.contains(&hop))
             });
         }
-        // §9.1.1: degree of preference; LOCAL_PREF only counts on iBGP.
-        // RFC 8326 §4: GRACEFUL_SHUTDOWN means LOCAL_PREF 0, also on eBGP,
-        // so traffic moves off a neighbor that is about to go away.
+        // §9.1.1: degree of preference. LOCAL_PREF from an eBGP neighbor is
+        // dropped on receipt (RFC 7606 §7.5), so on an eBGP route it was set
+        // by our import filter. RFC 8326 §4: GRACEFUL_SHUTDOWN means
+        // LOCAL_PREF 0, also on eBGP, so traffic moves off a neighbor that is
+        // about to go away.
         keep_min(&mut alive, |i| {
             let local_pref = if summary(i).graceful_shutdown {
                 0
-            } else if info(i).ibgp {
-                summary(i).local_pref.unwrap_or(DEFAULT_LOCAL_PREF)
             } else {
-                DEFAULT_LOCAL_PREF
+                summary(i).local_pref.unwrap_or(DEFAULT_LOCAL_PREF)
             };
             Reverse(local_pref)
         });
@@ -425,21 +425,25 @@ mod tests {
     }
 
     #[test]
-    fn local_pref_only_counts_on_ibgp() {
+    fn local_pref_beats_path_length() {
         let mut p = Pool::new();
         let high_lp_long = p.set(&[64501, 1, 2], Some(200), None);
         let short = p.set(&[64502], None, None);
+        let low_lp_short = p.set(&[64503], Some(50), None);
+        let long = p.set(&[64504, 1, 2], None, None);
         let prefer = DecisionProcess {
             unreachable: &HashSet::new(),
             pool: &p.pool,
             info,
         };
-        // From eBGP source 1, LOCAL_PREF 200 is ignored: the shorter path wins.
-        let (a, b) = (route(1, high_lp_long), route(2, short));
+        // From iBGP source 10, or set by an import filter on eBGP source 1.
+        for source in [10, 1] {
+            let (a, b) = (route(source, high_lp_long), route(2, short));
+            assert_eq!(pick(&prefer, &[a, b]), a);
+        }
+        // Below the default of 100, a shorter path loses.
+        let (a, b) = (route(3, low_lp_short), route(4, long));
         assert_eq!(pick(&prefer, &[a, b]), b);
-        // From iBGP source 10 it wins.
-        let (a, b) = (route(10, high_lp_long), route(2, short));
-        assert_eq!(pick(&prefer, &[a, b]), a);
     }
 
     #[test]

@@ -32,6 +32,10 @@ pub enum DecodeError {
     UnsupportedOptionalParameter(u8),
     #[error("unacceptable hold time {0}")]
     UnacceptableHoldTime(u16),
+    /// RFC 9234 §4.2: roles that do not fit together, several different
+    /// roles, or (strict mode) no role from the peer.
+    #[error("role mismatch")]
+    RoleMismatch,
 
     #[error("malformed attribute list")]
     MalformedAttributeList,
@@ -78,6 +82,7 @@ impl DecodeError {
             BadBgpIdentifier => (OPEN_MESSAGE, 3, none()),
             UnsupportedOptionalParameter(_) => (OPEN_MESSAGE, 4, none()),
             UnacceptableHoldTime(_) => (OPEN_MESSAGE, 6, none()),
+            RoleMismatch => (OPEN_MESSAGE, 11, none()),
 
             MalformedAttributeList => (UPDATE_MESSAGE, 1, none()),
             UnrecognizedWellKnownAttribute(attr) => (UPDATE_MESSAGE, 2, attr.clone()),

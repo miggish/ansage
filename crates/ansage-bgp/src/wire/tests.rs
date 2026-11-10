@@ -983,3 +983,63 @@ fn update_ipv4_with_ipv6_next_hop() {
     .unwrap_err();
     assert!(matches!(err, DecodeError::OptionalAttribute(_)));
 }
+
+#[test]
+fn role_capability_roundtrip() {
+    // AS 64501, hold 90, id 192.0.2.2; capability BGP Role (9) = customer.
+    let bytes = msg("0022 01 04 fbf5 005a c0000202 05 02 03 090103");
+    let open = Open {
+        my_as: 64501,
+        hold_time: 90,
+        bgp_id: Ipv4Addr::new(192, 0, 2, 2),
+        capabilities: vec![Capability::Role(Role::CUSTOMER)],
+    };
+    roundtrip(&bytes, &NEG4, Message::Open(open));
+    // A role value must be one byte.
+    let long = msg("0023 01 04 fbf5 005a c0000202 06 02 04 09020300");
+    assert_eq!(
+        decode(&long, &NEG4).unwrap_err(),
+        DecodeError::MalformedOpen
+    );
+}
+
+#[test]
+fn role_pairs() {
+    let pairs = [
+        (Role::PROVIDER, Role::CUSTOMER),
+        (Role::CUSTOMER, Role::PROVIDER),
+        (Role::RS, Role::RS_CLIENT),
+        (Role::RS_CLIENT, Role::RS),
+        (Role::PEER, Role::PEER),
+    ];
+    for (local, remote) in pairs {
+        assert_eq!(local.counterpart(), Some(remote));
+    }
+    assert_eq!(Role(5).counterpart(), None);
+}
+
+#[test]
+fn only_to_customer_attribute() {
+    // OTC (35) = AS 64500, optional transitive.
+    let bytes = update_bytes(
+        &format!("40010100 {AS_PATH} {NEXT_HOP} c02304 0000fbf4"),
+        NLRI,
+    );
+    let update = decoded_update(&bytes, &NEG4);
+    assert_eq!(update.treat_as_withdraw, None);
+    assert_eq!(
+        update.attr(type_code::ONLY_TO_CUSTOMER),
+        Some(&PathAttr::OnlyToCustomer(64500))
+    );
+    let mut buf = BytesMut::new();
+    PathAttr::OnlyToCustomer(64500)
+        .encode(&NEG4, &mut buf)
+        .unwrap();
+    assert_eq!(&buf[..], hex("c02304 0000fbf4"));
+
+    // RFC 9234 §5: a length other than 4 is treat-as-withdraw.
+    let bytes = update_bytes(&format!("40010100 {AS_PATH} {NEXT_HOP} c02302 fbf4"), NLRI);
+    let update = decoded_update(&bytes, &NEG4);
+    assert!(update.treat_as_withdraw.is_some());
+    assert_eq!(update.nlri, [p4("198.51.100.0/24")]);
+}

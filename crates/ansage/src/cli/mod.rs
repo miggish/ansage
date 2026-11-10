@@ -3,6 +3,7 @@
 
 mod client;
 mod show;
+pub mod test;
 mod upgrade;
 
 use std::{
@@ -70,6 +71,14 @@ pub enum Command {
     },
     /// Check the config file (load and validate) and exit 0 if it is valid.
     Check,
+    /// What ansage does with one route, step by step: import (built-in
+    /// checks, RFC 9234, the import filter), best path, kernel, and the
+    /// export to every neighbor. Changes nothing.
+    ///
+    /// With --from: a route that neighbor could send for PREFIX. Without:
+    /// the route ansage has for PREFIX, or for the longest prefix containing
+    /// ADDRESS.
+    Test(test::TestArgs),
     /// Panic on purpose (tests the panic hook); only when the daemon runs
     /// with ANSAGE_CRASH_TEST=1.
     #[command(hide = true)]
@@ -118,6 +127,10 @@ pub enum Show {
         /// At most this many routes per family [default: 1000].
         #[arg(long, conflicts_with = "prefix")]
         limit: Option<usize>,
+        /// What this neighbor (ID, address or address:port) was sent, with
+        /// the attributes it got (Adj-RIB-Out).
+        #[arg(long, value_name = "NEIGHBOR", conflicts_with = "prefix")]
+        out: Option<String>,
     },
     /// Routes ansage installed in the kernel ([kernel]) and their next hops.
     Fib,
@@ -146,6 +159,7 @@ pub fn run(socket: &Path, json: bool, command: Command) -> ExitCode {
             timeout,
         } => upgrade::run(socket, json, binary.as_deref(), force, dry_run, timeout),
         Command::Check => unreachable!("handled before the socket"),
+        Command::Test(args) => test::live(socket, json, &args),
         Command::DebugCrash => call(socket, json, Request::Crash, |_| String::new()),
         Command::Withdraw { prefixes } => call(socket, json, Request::Withdraw { prefixes }, |v| {
             show::own(v, false)

@@ -8,6 +8,8 @@ use crate::config::Kernel;
 
 use crate::config::Neighbor;
 
+use crate::config::{ExportPolicy, ImportPolicy};
+
 use ansage_bgp::wire::Prefix;
 use serde::Serialize;
 
@@ -18,7 +20,8 @@ pub struct Plan {
     pub removed: Vec<SocketAddr>,
     /// Session settings changed: closed and reconnected.
     pub restarted: Vec<SocketAddr>,
-    /// Only the description changed.
+    /// Settings that apply without a reset changed: description, install,
+    /// import, export, default_route, or a filter the neighbor uses.
     pub updated: Vec<SocketAddr>,
     #[serde(serialize_with = "as_strings")]
     pub announce: Vec<Prefix>,
@@ -71,16 +74,20 @@ pub fn plan(old: &Config, new: &Config) -> Result<Plan, String> {
         match old.neighbors.iter().find(|o| o.socket_addr() == key) {
             None => plan.added.push(key),
             Some(o) if old.session(o) != new.session(n) => plan.restarted.push(key),
-            Some(o) if o == n => {}
+            Some(o) if o == n && !filters_changed(old, new, n) => {}
             Some(o) => {
-                // Neither needs the session: `install` only changes what
-                // goes into the kernel.
-                let same_but_description = Neighbor {
+                // None of these needs the session: `install` only changes
+                // what goes into the kernel, the RIB applies new policies to
+                // the running session (with a route refresh for import).
+                let same_but_runtime = Neighbor {
                     description: n.description.clone(),
                     install: n.install,
+                    import: n.import.clone(),
+                    export: n.export.clone(),
+                    default_route: n.default_route,
                     ..o.clone()
                 };
-                if same_but_description == *n {
+                if same_but_runtime == *n {
                     plan.updated.push(key);
                 } else {
                     plan.restarted.push(key);
@@ -122,6 +129,24 @@ pub fn plan(old: &Config, new: &Config) -> Result<Plan, String> {
     Ok(plan)
 }
 
+/// A filter `n` uses is defined differently in `new`.
+fn filters_changed(old: &Config, new: &Config, n: &Neighbor) -> bool {
+    let names = [
+        match &n.import {
+            ImportPolicy::Filter(name) => Some(name),
+            _ => None,
+        },
+        match &n.export {
+            ExportPolicy::Filter(name) => Some(name),
+            _ => None,
+        },
+    ];
+    names
+        .into_iter()
+        .flatten()
+        .any(|name| old.filters.get(name) != new.filters.get(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +177,29 @@ mod tests {
     #[test]
     fn same_config_changes_nothing() {
         assert!(plan(&parse(BASE), &parse(BASE)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn policies_change_without_a_restart() {
+        let filter = "\n[filter.out]\n[[filter.out.rule]]\nsource = \"own\"\naction = \"accept\"\n";
+        let old = format!("{BASE}{filter}");
+        let new = old.replace(
+            "description = \"r1\"",
+            "description = \"r1\"\nimport = \"all\"\nexport = \"out\"",
+        );
+        let p = plan(&parse(&old), &parse(&new)).unwrap();
+        assert_eq!(p.updated, [addr("10.0.0.1")]);
+        assert!(p.restarted.is_empty());
+
+        // The filter itself changes: its users are updated.
+        let changed = new.replace("source = \"own\"", "source = \"own\"\nmed = 5");
+        let p = plan(&parse(&new), &parse(&changed)).unwrap();
+        assert_eq!(p.updated, [addr("10.0.0.1")]);
+
+        // A role is part of the OPEN: reconnect.
+        let role = new.replace("asn = 64501", "asn = 64501\nrole = \"peer\"");
+        let p = plan(&parse(&new), &parse(&role)).unwrap();
+        assert_eq!(p.restarted, [addr("10.0.0.1")]);
     }
 
     #[test]

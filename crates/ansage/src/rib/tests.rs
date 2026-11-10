@@ -3,7 +3,10 @@ use std::{
     sync::mpsc as std_mpsc,
 };
 
-use crate::config::{Config, ImportPolicy};
+use crate::{
+    config::Config,
+    policy::{Export, Import},
+};
 use ansage_bgp::{
     session::{PeerInfo, Retain},
     wire::{
@@ -32,7 +35,7 @@ fn rib(limit_v4: Option<u32>) -> Rib {
         peers.insert(
             peer,
             PeerSettings {
-                import: ImportPolicy::All,
+                import: Import::All,
                 max_prefixes_ipv4: limit_v4,
                 ..PeerSettings::default()
             },
@@ -63,6 +66,7 @@ fn up(peer: SourceId, asn: u32) -> (RibMsg, mpsc::Receiver<PeerMsg>) {
         route_refresh: true,
         graceful_restart: None,
         offered_graceful_restart: None,
+        role: None,
     };
     let msg = RibMsg::Up(Box::new(PeerUp {
         peer,
@@ -105,7 +109,7 @@ fn exports(out: Vec<(SourceId, PeerMsg)>, peer: SourceId) -> Vec<ExportBatch> {
         .filter(|(p, _)| *p == peer)
         .filter_map(|(_, m)| match m {
             PeerMsg::Export(batch) => Some(batch),
-            PeerMsg::Teardown { .. } => None,
+            PeerMsg::Teardown { .. } | PeerMsg::RouteRefresh(_) => None,
         })
         .collect()
 }
@@ -453,6 +457,40 @@ fn import_none_stores_nothing() {
     );
     assert_eq!(rib.stats().prefixes_ipv4, 1, "only our own prefix");
     assert_eq!(batches.len(), 1, "own prefixes are still announced");
+}
+
+#[test]
+fn export_none_sends_only_end_of_rib() {
+    let mut rib = rib(None);
+    rib.config.peers.get_mut(&1).unwrap().export = Export::None;
+    let (msg, _rx) = up(1, 64501);
+    let mut batches = exports(run(&mut rib, vec![msg]), 1);
+    assert_eq!(batches.len(), 1);
+    let batch = batches.remove(0);
+    assert!(batch.announce.is_empty(), "no own prefixes: {batch:#?}");
+    assert!(batch.withdraw.is_empty());
+    assert_eq!(batch.end_of_rib, [Afi::IPV4, Afi::IPV6]);
+
+    // Its routes are still learned, and later changes send nothing.
+    let update = learned(&[64501], &["198.51.100.0/24"]);
+    let out = run(
+        &mut rib,
+        vec![
+            RibMsg::Ready { peer: 1 },
+            RibMsg::Update { peer: 1, update },
+        ],
+    );
+    assert!(exports(out, 1).is_empty());
+    assert_eq!(
+        rib.stats().prefixes_ipv4,
+        2,
+        "own prefix and the learned one"
+    );
+    let (_, out) = own(&mut rib, true, &["203.0.113.0/24"]);
+    assert!(
+        exports(out, 1).is_empty(),
+        "a new own prefix is not sent either"
+    );
 }
 
 fn ask<T>(rib: &mut Rib, query: impl FnOnce(oneshot::Sender<T>) -> Query) -> T {
@@ -1055,7 +1093,7 @@ fn rib_with_fib() -> (Rib, std_mpsc::Receiver<FibMsg>) {
     let mut rib = rib(None);
     for (peer, install) in [(1, true), (2, false)] {
         let settings = PeerSettings {
-            import: ImportPolicy::All,
+            import: Import::All,
             install,
             ..PeerSettings::default()
         };
@@ -1213,7 +1251,7 @@ fn install_and_family_changes_reevaluate_prefixes() {
     assert_eq!(fib_batch(&mut rib, &rx), [(p("198.51.100.0/24"), None)]);
 
     let settings = PeerSettings {
-        import: ImportPolicy::All,
+        import: Import::All,
         install: true,
         ..PeerSettings::default()
     };
@@ -1243,7 +1281,7 @@ fn unreachable_next_hops_lose_and_leave_the_kernel() {
     rib.config.peers.insert(
         3,
         PeerSettings {
-            import: ImportPolicy::All,
+            import: Import::All,
             install: true,
             ..PeerSettings::default()
         },
@@ -1420,7 +1458,7 @@ fn link_local_next_hops_carry_the_sessions_interface() {
     rib.config.peers.insert(
         3,
         PeerSettings {
-            import: ImportPolicy::All,
+            import: Import::All,
             install: true,
             ..PeerSettings::default()
         },
@@ -1655,4 +1693,390 @@ fn ipv4_routes_via_ipv6_next_hops_are_learned_and_installed() {
         fib_gateways(&mut rib, &rx),
         [(p("198.51.100.0/24"), Some(gw))]
     );
+}
+
+// --- Roles, filters and the default route: a provider (1), a customer (2)
+// and a peer (3).
+
+const TRANSIT: &str = r#"
+    asn = 64500
+    router_id = "203.0.113.1"
+    announce = ["192.0.2.0/24"]
+
+    [[neighbor]]
+    address = "127.0.0.1"
+    asn = 64501
+    role = "provider"
+    import = "all"
+
+    [[neighbor]]
+    address = "127.0.0.2"
+    asn = 64510
+    role = "customer"
+    import = "from-customer"
+    export = "to-customer"
+    default_route = true
+
+    [[neighbor]]
+    address = "127.0.0.3"
+    asn = 64502
+    role = "peer"
+    import = "all"
+    export = "to-peer"
+
+    [filter.from-customer]
+    [[filter.from-customer.rule]]
+    prefixes = ["203.0.113.0/24"]
+    origin_as = [64510]
+    action = "accept"
+    local_pref = 200
+    add_communities = ["64500:200"]
+
+    [filter.to-customer]
+    [[filter.to-customer.rule]]
+    action = "accept"
+
+    [filter.to-peer]
+    [[filter.to-peer.rule]]
+    source = "own"
+    action = "accept"
+    [[filter.to-peer.rule]]
+    from_role = ["customer"]
+    action = "accept"
+    prepend = 1
+"#;
+
+fn transit_rib() -> (Rib, Vec<mpsc::Receiver<PeerMsg>>) {
+    let config: Config = toml::from_str(TRANSIT).unwrap();
+    let mut rib = Rib::new(RibConfig::new(&config));
+    let mut rxs = Vec::new();
+    for (peer, asn) in [(1, 64501), (2, 64510), (3, 64502)] {
+        let (msg, rx) = up(peer, asn);
+        rxs.push(rx);
+        run(&mut rib, vec![msg]);
+    }
+    (rib, rxs)
+}
+
+/// Handles `msgs` with every peer ready, and returns what each got.
+fn step(rib: &mut Rib, msgs: Vec<RibMsg>) -> HashMap<SourceId, Vec<ExportBatch>> {
+    let mut all: Vec<RibMsg> = [1, 2, 3].map(|peer| RibMsg::Ready { peer }).into();
+    all.extend(msgs);
+    let mut got: HashMap<SourceId, Vec<ExportBatch>> = [1, 2, 3]
+        .into_iter()
+        .map(|peer| (peer, Vec::new()))
+        .collect();
+    for (peer, msg) in run(rib, all) {
+        if let PeerMsg::Export(batch) = msg {
+            got.entry(peer).or_default().push(batch);
+        }
+    }
+    got
+}
+
+/// The attributes `prefix` went out with, if it was announced.
+fn sent(batches: &[ExportBatch], prefix: &str) -> Option<Vec<PathAttr>> {
+    batches.iter().flat_map(|b| &b.announce).find_map(|group| {
+        group
+            .prefixes
+            .contains(&p(prefix))
+            .then(|| group.attrs.clone())
+    })
+}
+
+fn withdrawn(batches: &[ExportBatch], prefix: &str) -> bool {
+    batches.iter().any(|b| b.withdraw.contains(&p(prefix)))
+}
+
+fn path_of(attrs: &[PathAttr]) -> Vec<u32> {
+    attrs
+        .iter()
+        .find_map(|a| match a {
+            PathAttr::AsPath(path) => {
+                Some(path.segments.iter().flat_map(|s| s.asns.clone()).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn otc_of(attrs: &[PathAttr]) -> Option<u32> {
+    attrs.iter().find_map(|a| match a {
+        PathAttr::OnlyToCustomer(asn) => Some(*asn),
+        _ => None,
+    })
+}
+
+#[test]
+fn customer_routes_are_filtered_and_go_to_peers() {
+    let (mut rib, _rxs) = transit_rib();
+    let update = learned(
+        &[64510],
+        &["203.0.113.0/24", "203.0.113.0/25", "198.51.100.0/24"],
+    );
+    let got = step(&mut rib, vec![RibMsg::Update { peer: 2, update }]);
+    assert_eq!(rib.route_count(&p("203.0.113.0/24")), 1);
+    assert_eq!(
+        rib.route_count(&p("203.0.113.0/25")),
+        0,
+        "longer than the range"
+    );
+    assert_eq!(
+        rib.route_count(&p("198.51.100.0/24")),
+        0,
+        "not the customer's"
+    );
+
+    // The peer gets it with the extra prepend and OTC (RFC 9234 egress).
+    let attrs = sent(&got[&3], "203.0.113.0/24").expect("sent to the peer");
+    assert_eq!(path_of(&attrs), [64500, 64500, 64510]);
+    assert_eq!(otc_of(&attrs), Some(64500));
+    assert!(attrs.contains(&PathAttr::Communities(vec![64500 << 16 | 200])));
+    assert!(
+        !attrs.iter().any(|a| matches!(a, PathAttr::LocalPref(_))),
+        "eBGP"
+    );
+    // The provider's export is "own": nothing learned.
+    assert!(sent(&got[&1], "203.0.113.0/24").is_none());
+
+    // The customer sends the prefix again, now with another origin: the
+    // filter rejects it, which withdraws the route everywhere.
+    let update = learned(&[64510, 64999], &["203.0.113.0/24"]);
+    let got = step(&mut rib, vec![RibMsg::Update { peer: 2, update }]);
+    assert_eq!(rib.route_count(&p("203.0.113.0/24")), 0);
+    assert!(withdrawn(&got[&3], "203.0.113.0/24"));
+}
+
+#[test]
+fn provider_routes_get_otc_and_only_go_to_customers() {
+    let (mut rib, _rxs) = transit_rib();
+    let update = learned(&[64501, 3356], &["8.8.8.0/24"]);
+    let got = step(&mut rib, vec![RibMsg::Update { peer: 1, update }]);
+    let attrs = sent(&got[&2], "8.8.8.0/24").expect("sent to the customer");
+    assert_eq!(path_of(&attrs), [64500, 64501, 3356]);
+    assert_eq!(otc_of(&attrs), Some(64501), "added on ingress, kept");
+    assert!(sent(&got[&3], "8.8.8.0/24").is_none(), "never to a peer");
+}
+
+#[test]
+fn otc_from_a_customer_is_a_leak() {
+    let (mut rib, _rxs) = transit_rib();
+    let mut update = learned(&[64510], &["203.0.113.0/24"]);
+    update.attrs.push(PathAttr::OnlyToCustomer(64777));
+    step(&mut rib, vec![RibMsg::Update { peer: 2, update }]);
+    assert_eq!(rib.route_count(&p("203.0.113.0/24")), 0);
+}
+
+#[test]
+fn default_route_follows_the_provider_sessions() {
+    let (mut rib, _rxs) = transit_rib();
+    // Sent when the customer came up (the provider was up already); check
+    // through a fresh session of the customer.
+    step(
+        &mut rib,
+        vec![RibMsg::Down {
+            peer: 2,
+            retain: None,
+        }],
+    );
+    let (msg, _rx) = up(2, 64510);
+    let got = step(&mut rib, vec![msg]);
+    let attrs = sent(&got[&2], "0.0.0.0/0").expect("default route");
+    assert_eq!(path_of(&attrs), [64500]);
+    assert_eq!(otc_of(&attrs), Some(64500));
+    assert!(sent(&got[&2], "::/0").is_some());
+    assert!(
+        sent(&got[&3], "0.0.0.0/0").is_none(),
+        "only with default_route"
+    );
+
+    let got = step(
+        &mut rib,
+        vec![RibMsg::Down {
+            peer: 1,
+            retain: None,
+        }],
+    );
+    assert!(withdrawn(&got[&2], "0.0.0.0/0"));
+    assert!(withdrawn(&got[&2], "::/0"));
+    let (msg, _rx) = up(1, 64501);
+    let got = step(&mut rib, vec![msg]);
+    assert!(sent(&got[&2], "0.0.0.0/0").is_some());
+}
+
+#[test]
+fn policy_changes_apply_to_the_running_session() {
+    let (mut rib, _rxs) = transit_rib();
+    let update = learned(&[64501, 3356], &["8.8.8.0/24"]);
+    step(&mut rib, vec![RibMsg::Update { peer: 1, update }]);
+    let config: Config = toml::from_str(TRANSIT).unwrap();
+    let customer = &config.neighbors[1];
+
+    // Export "none" for the customer: everything it had is withdrawn.
+    let mut settings = PeerSettings::new(&config, customer);
+    settings.export = Export::None;
+    settings.default_route = false;
+    let got = step(
+        &mut rib,
+        vec![RibMsg::PeerSettings {
+            peer: 2,
+            settings: Some(settings),
+        }],
+    );
+    assert!(withdrawn(&got[&2], "8.8.8.0/24"));
+    assert!(withdrawn(&got[&2], "0.0.0.0/0"));
+    assert!(withdrawn(&got[&2], "192.0.2.0/24"));
+
+    // Back to the filter: sent again.
+    let settings = PeerSettings::new(&config, customer);
+    let got = step(
+        &mut rib,
+        vec![RibMsg::PeerSettings {
+            peer: 2,
+            settings: Some(settings),
+        }],
+    );
+    assert!(sent(&got[&2], "8.8.8.0/24").is_some());
+
+    // A new import policy asks the provider for its routes again.
+    let mut settings = PeerSettings::new(&config, &config.neighbors[0]);
+    settings.import = Import::new(
+        &config,
+        &crate::config::ImportPolicy::Filter("from-customer".into()),
+    );
+    let mut out = Vec::new();
+    rib.handle(
+        RibMsg::PeerSettings {
+            peer: 1,
+            settings: Some(settings),
+        },
+        &mut out,
+    );
+    assert!(
+        out.iter()
+            .any(|(peer, msg)| *peer == 1
+                && *msg == PeerMsg::RouteRefresh(vec![Afi::IPV4, Afi::IPV6]))
+    );
+
+    // Import "none": its routes go at once.
+    let mut settings = PeerSettings::new(&config, &config.neighbors[0]);
+    settings.import = Import::None;
+    let got = step(
+        &mut rib,
+        vec![RibMsg::PeerSettings {
+            peer: 1,
+            settings: Some(settings),
+        }],
+    );
+    assert_eq!(rib.route_count(&p("8.8.8.0/24")), 0);
+    assert!(withdrawn(&got[&2], "8.8.8.0/24"));
+}
+
+fn test_route(from: &str, prefix: &str, path: &[u32]) -> TestQuery {
+    TestQuery::Route(TestRoute {
+        from: Some(from.parse().unwrap()),
+        prefix: Some(p(prefix)),
+        as_path: Some(path.to_vec()),
+        ..TestRoute::default()
+    })
+}
+
+#[test]
+fn trace_explains_a_route_without_changing_anything() {
+    let (mut rib, _rxs) = transit_rib();
+    let attr_sets = rib.stats().attr_sets;
+    let trace = rib
+        .trace(test_route("127.0.0.2", "203.0.113.0/24", &[64510]))
+        .unwrap();
+    let import = trace.import.as_ref().unwrap();
+    assert!(import.accepted);
+    assert_eq!(import.rule, Some(0));
+    assert_eq!(trace.tested_is_best, Some(true));
+    let to = |peer: SourceId| trace.exports.iter().find(|e| e.peer == peer).unwrap();
+    assert!(!to(1).sent, "provider: export own");
+    assert_eq!(to(1).reason, "export own: a learned route");
+    assert_eq!(to(2).reason, "came from this neighbor");
+    assert!(to(3).sent);
+    assert_eq!(to(3).rule, Some(1));
+    assert_eq!(path_of(&to(3).attrs), [64500, 64500, 64510]);
+    // Nothing stored, nothing sent, the pool as before.
+    assert_eq!(rib.route_count(&p("203.0.113.0/24")), 0);
+    assert_eq!(rib.stats().attr_sets, attr_sets);
+    let out = run(
+        &mut rib,
+        [1, 2, 3].map(|peer| RibMsg::Ready { peer }).into(),
+    );
+    assert!(out.is_empty());
+
+    // Rejections say why.
+    let trace = rib
+        .trace(test_route("127.0.0.2", "203.0.113.0/25", &[64510]))
+        .unwrap();
+    assert_eq!(
+        trace.import.unwrap().reason,
+        "no rule of the import filter matches"
+    );
+    let trace = rib
+        .trace(test_route("127.0.0.1", "8.8.8.0/24", &[64501, 64500]))
+        .unwrap();
+    assert_eq!(trace.import.unwrap().reason, "AS loop");
+    assert!(
+        rib.trace(test_route("127.0.0.9", "8.8.8.0/24", &[1]))
+            .is_err()
+    );
+}
+
+#[test]
+fn trace_of_an_existing_route() {
+    let (mut rib, _rxs) = transit_rib();
+    let update = learned(&[64501, 3356], &["8.8.8.0/24"]);
+    step(&mut rib, vec![RibMsg::Update { peer: 1, update }]);
+    let trace = rib
+        .trace(TestQuery::Address("8.8.8.8".parse().unwrap()))
+        .unwrap();
+    assert_eq!(trace.prefix, p("8.8.8.0/24"));
+    assert_eq!(trace.candidates.len(), 1);
+    let to = |peer: SourceId| trace.exports.iter().find(|e| e.peer == peer).unwrap();
+    assert!(to(2).sent);
+    assert_eq!(to(3).reason, "carries OTC: only for customers (RFC 9234)");
+    // The same prefix from the peer: a longer path, the provider's stays.
+    let trace = rib
+        .trace(test_route("127.0.0.3", "8.8.8.0/24", &[64502, 1, 3356]))
+        .unwrap();
+    assert_eq!(trace.tested_is_best, Some(false));
+    assert_eq!(trace.candidates[0].source, 1);
+    assert_eq!(trace.kernel.reason, "not the best route");
+}
+
+#[test]
+fn adj_rib_out_shows_what_was_sent() {
+    let (mut rib, _rxs) = transit_rib();
+    let update = learned(&[64510], &["203.0.113.0/24"]);
+    step(&mut rib, vec![RibMsg::Update { peer: 2, update }]);
+    let page = ask(&mut rib, |reply| Query::AdjOut {
+        peer: 3,
+        afi: Afi::IPV4,
+        limit: 10,
+        reply,
+    });
+    assert_eq!(page.total, 2, "own prefix and the customer's");
+    let route = page
+        .routes
+        .iter()
+        .find(|r| r.prefix == p("203.0.113.0/24"))
+        .unwrap();
+    assert_eq!(path_of(&route.attrs), [64500, 64500, 64510]);
+    assert!(
+        route
+            .attrs
+            .contains(&PathAttr::NextHop(Ipv4Addr::new(192, 0, 2, 1)))
+    );
+    assert_eq!(otc_of(&route.attrs), Some(64500));
+    let page = ask(&mut rib, |reply| Query::AdjOut {
+        peer: 1,
+        afi: Afi::IPV4,
+        limit: 10,
+        reply,
+    });
+    assert_eq!(page.total, 1, "the provider only gets our own prefix");
 }

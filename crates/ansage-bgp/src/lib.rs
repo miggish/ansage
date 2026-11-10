@@ -64,6 +64,8 @@
 //!     passive: false,
 //!     graceful_restart: None,
 //!     extended_next_hop: false,
+//!     role: None,
+//!     strict_role: false,
 //! });
 //! let mut actions = Vec::new();
 //! fsm.handle(Event::Start, Instant::now(), &mut actions);

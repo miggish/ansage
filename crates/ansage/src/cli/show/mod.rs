@@ -36,6 +36,7 @@ pub(super) fn run(socket: &Path, json: bool, what: Show) -> ExitCode {
             prefix,
             family,
             limit,
+            out,
         } => Request::Rib {
             prefix: prefix.clone(),
             family: family.map(|f| match f {
@@ -43,6 +44,7 @@ pub(super) fn run(socket: &Path, json: bool, what: Show) -> ExitCode {
                 FamilyArg::Ipv6 => Family::Ipv6,
             }),
             limit: *limit,
+            out: out.clone(),
         },
         Show::Fib => Request::Fib,
     };
@@ -95,12 +97,12 @@ fn ago(now: u64, at: &Value) -> String {
     }
 }
 
-fn list(v: &Value) -> &[Value] {
+pub(super) fn list(v: &Value) -> &[Value] {
     v.as_array().map_or(&[], Vec::as_slice)
 }
 
 /// A scalar as text; strings without quotes, null and missing as "-".
-fn text(v: &Value) -> String {
+pub(super) fn text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => "-".to_string(),
@@ -109,22 +111,22 @@ fn text(v: &Value) -> String {
 }
 
 /// Left-aligned columns separated by two spaces.
-struct Table {
+pub(super) struct Table {
     rows: Vec<Vec<String>>,
 }
 
 impl Table {
-    fn new(header: &[&str]) -> Self {
+    pub(super) fn new(header: &[&str]) -> Self {
         Self {
             rows: vec![header.iter().map(ToString::to_string).collect()],
         }
     }
 
-    fn row(&mut self, row: Vec<String>) {
+    pub(super) fn row(&mut self, row: Vec<String>) {
         self.rows.push(row);
     }
 
-    fn render(&self) -> String {
+    pub(super) fn render(&self) -> String {
         let columns = self.rows[0].len();
         let widths: Vec<usize> = (0..columns)
             .map(|i| {

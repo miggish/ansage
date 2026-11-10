@@ -2,39 +2,75 @@
 
 use std::collections::HashMap;
 
-use crate::config::ExportPolicy;
 use ansage_bgp::wire::{
-    Afi, AsPath, AsSegment, NextHop, PathAttr, Prefix, Safi, SegmentType, Update,
+    Afi, AsPath, NextHop, Origin, PathAttr, Prefix, Prefix4, Prefix6, Safi, Update, attr_flags,
 };
 use bytes::{Bytes, BytesMut};
 use tracing::{debug, info, warn};
 
 use super::{
-    DEFAULT_LOCAL_PREF, EXPORT_BATCH, Outbound, PeerState, Rib,
-    msg::{Announce, ExportBatch, PeerMsg},
-    pool::{AttrId, AttrPool},
+    DEFAULT_LOCAL_PREF, EXPORT_BATCH, Outbound, PeerState, Rib, family_index,
+    msg::{Announce, ExportBatch, PeerMsg, PeerSettings},
+    pool::AttrId,
     table::{Change, LOCAL, Route, SourceId},
 };
+use crate::policy::{self, Export, RouteView};
 
-/// The source attribute set to announce `prefix` with to `peer`, if any.
-fn export_route(
-    state: &PeerState,
-    peer: SourceId,
-    prefix: Prefix,
-    best: Option<Route>,
-) -> Option<AttrId> {
-    let best = best?;
-    // Never send a route back where it came from.
-    if best.source == peer {
-        return None;
+/// 0.0.0.0/0 and ::/0, for `default_route`.
+pub(super) fn default_routes() -> [Prefix; 2] {
+    [
+        Prefix::V4(Prefix4::new(std::net::Ipv4Addr::UNSPECIFIED, 0).expect("valid")),
+        Prefix::V6(Prefix6::new(std::net::Ipv6Addr::UNSPECIFIED, 0).expect("valid")),
+    ]
+}
+
+/// What a session can carry: from its OPEN, or assumed by `ansage test`
+/// for a session that is not up.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SessionView {
+    pub ibgp: bool,
+    /// Negotiated, by family index.
+    pub families: [bool; 2],
+    /// A next hop to send routes of the family with.
+    pub next_hops: [bool; 2],
+}
+
+impl SessionView {
+    pub(super) fn of(state: &PeerState) -> Self {
+        let afis = [Afi::IPV4, Afi::IPV6];
+        Self {
+            ibgp: state.up.info.negotiated.ibgp,
+            families: afis.map(|afi| state.negotiated(afi)),
+            next_hops: afis.map(|afi| !next_hop_missing(state, afi)),
+        }
     }
-    let allowed = match state.settings.export {
-        ExportPolicy::Own => best.source == LOCAL,
-    };
-    if !allowed || !state.negotiated(prefix.afi()) || next_hop_missing(state, prefix.afi()) {
-        return None;
+}
+
+/// Whether a session gets a prefix: the outgoing attributes (without
+/// NEXT_HOP), why, and the filter rule that decided.
+#[derive(Debug, Clone)]
+pub(super) struct Decision {
+    pub attrs: Option<Vec<PathAttr>>,
+    pub reason: &'static str,
+    pub rule: Option<usize>,
+}
+
+impl Decision {
+    fn no(reason: &'static str) -> Self {
+        Self {
+            attrs: None,
+            reason,
+            rule: None,
+        }
     }
-    Some(best.attrs)
+
+    fn sent(attrs: Vec<PathAttr>, reason: &'static str, rule: Option<usize>) -> Self {
+        Self {
+            attrs: Some(attrs),
+            reason,
+            rule,
+        }
+    }
 }
 
 /// No next hop to send `afi` routes with. IPv4 routes can also use the IPv6
@@ -68,60 +104,44 @@ fn warn_missing_next_hops(state: &mut PeerState) {
     }
 }
 
-/// Outgoing attributes for a route with source set `attrs` (RFC 4271 §5.1):
-/// eBGP prepends our AS (`extra_prepend` more times) and drops LOCAL_PREF;
-/// iBGP adds LOCAL_PREF to our own routes. The next hop is always ourselves.
+/// Outgoing attributes for a route with attributes `attrs` (RFC 4271
+/// §5.1), without NEXT_HOP (added per session when sending): eBGP prepends
+/// our AS (`extra_prepend` more times) and drops LOCAL_PREF and MED; iBGP
+/// adds LOCAL_PREF to our own routes. A learned route loses unknown
+/// non-transitive attributes, and unknown transitive ones get PARTIAL.
 fn export_attrs(
-    pool: &AttrPool,
+    attrs: Vec<PathAttr>,
     local_asn: u32,
-    state: &PeerState,
-    attrs: AttrId,
+    ibgp: bool,
+    learned: bool,
     extra_prepend: u8,
-) -> (Vec<PathAttr>, Option<NextHop>) {
-    let ibgp = state.up.info.negotiated.ibgp;
-    let mut out = Vec::new();
-    for attr in pool.attrs(attrs) {
+) -> Vec<PathAttr> {
+    let mut out = Vec::with_capacity(attrs.len() + 1);
+    for attr in attrs {
         match attr {
             PathAttr::AsPath(mut path) if !ibgp => {
                 for _ in 0..=extra_prepend {
-                    path = prepend(path, local_asn);
+                    path = policy::prepend(path, local_asn);
                 }
                 out.push(PathAttr::AsPath(path));
             }
             PathAttr::NextHop(_) => {}
             PathAttr::LocalPref(_) if !ibgp => {}
             PathAttr::MultiExitDisc(_) if !ibgp => {}
+            PathAttr::Unknown { flags, .. } if learned && flags & attr_flags::TRANSITIVE == 0 => {}
+            PathAttr::Unknown { flags, code, value } if learned => out.push(PathAttr::Unknown {
+                flags: flags | attr_flags::PARTIAL,
+                code,
+                value,
+            }),
             other => out.push(other),
         }
-    }
-    if let Some(next_hop) = state.up.next_hop_ipv4 {
-        out.push(PathAttr::NextHop(next_hop));
     }
     if ibgp && !out.iter().any(|a| matches!(a, PathAttr::LocalPref(_))) {
         out.push(PathAttr::LocalPref(DEFAULT_LOCAL_PREF));
     }
     out.sort_by_key(PathAttr::type_code);
-    let next_hop = state.up.next_hop_ipv6.map(|global| NextHop::V6 {
-        global,
-        link_local: state.up.next_hop_ipv6_link_local,
-    });
-    (out, next_hop)
-}
-
-fn prepend(mut path: AsPath, asn: u32) -> AsPath {
-    match path.segments.first_mut() {
-        Some(segment) if segment.kind == SegmentType::Sequence && segment.asns.len() < 255 => {
-            segment.asns.insert(0, asn);
-        }
-        _ => path.segments.insert(
-            0,
-            AsSegment {
-                kind: SegmentType::Sequence,
-                asns: vec![asn],
-            },
-        ),
-    }
-    path
+    out
 }
 
 /// Encodes an export batch into UPDATE messages.
@@ -170,18 +190,138 @@ impl Rib {
             fib.dirty.insert(prefix);
         }
         for state in self.peers.values_mut() {
-            match state.settings.export {
-                // Own-only peers care about our prefixes and about prefixes
-                // they were sent before (to withdraw them). A learned route
+            let dirty = match &state.settings.export {
+                // Nothing goes out, nothing to withdraw.
+                Export::None => false,
+                // Peers that may get learned routes care about every change.
+                export if export.learned() => true,
+                // The others care about our prefixes and about prefixes they
+                // were sent before (to withdraw them). A learned route
                 // replacing another learned route concerns neither, which
                 // keeps a full table load cheap.
-                ExportPolicy::Own => {
-                    if involves_local || state.out.advertised.contains_key(&prefix) {
-                        state.out.dirty.insert(prefix);
-                    }
+                Export::Own | Export::Filter(_) => {
+                    involves_local || state.out.advertised.contains_key(&prefix)
                 }
+            };
+            if dirty {
+                state.out.dirty.insert(prefix);
             }
         }
+    }
+
+    /// Sessions with `default_route` re-check 0.0.0.0/0 and ::/0 (a provider
+    /// session came up or went down).
+    pub(super) fn default_routes_dirty(&mut self) {
+        for state in self.peers.values_mut() {
+            if state.settings.default_route {
+                state.out.dirty.extend(default_routes());
+            }
+        }
+    }
+
+    /// The attributes (without NEXT_HOP) `peer` gets `prefix` with, if it
+    /// gets it at all.
+    pub(super) fn outgoing(&self, peer: SourceId, prefix: Prefix) -> Option<Vec<PathAttr>> {
+        let state = self.peers.get(&peer)?;
+        let best = match prefix {
+            Prefix::V4(p) => self.v4.best(&p),
+            Prefix::V6(p) => self.v6.best(&p),
+        };
+        self.decide(peer, &state.settings, SessionView::of(state), prefix, best)
+            .attrs
+    }
+
+    /// Whether and how `peer` (with `settings`, on `session`) gets `prefix`
+    /// whose best route is `best`: the leak guard, the export policy, the
+    /// rewrite for the session and RFC 9234 egress. `best.attrs` must be in
+    /// the pool.
+    pub(super) fn decide(
+        &self,
+        peer: SourceId,
+        settings: &PeerSettings,
+        session: SessionView,
+        prefix: Prefix,
+        best: Option<Route>,
+    ) -> Decision {
+        let i = family_index(prefix.afi());
+        if !session.families[i] {
+            return Decision::no("family not negotiated");
+        }
+        if !session.next_hops[i] {
+            return Decision::no("no next hop for this family");
+        }
+        let local_asn = self.config.local_asn;
+        if settings.default_route && default_routes().contains(&prefix) {
+            if !self.provider_up() {
+                return Decision::no("default_route: no provider session is up");
+            }
+            let attrs = vec![
+                PathAttr::Origin(Origin::Igp),
+                PathAttr::AsPath(AsPath::default()),
+            ];
+            let mut out = export_attrs(attrs, local_asn, session.ibgp, false, 0);
+            out.extend(policy::egress(settings.role, local_asn, &out));
+            out.sort_by_key(PathAttr::type_code);
+            return Decision::sent(out, "default_route", None);
+        }
+        let Some(best) = best else {
+            return Decision::no("no route");
+        };
+        // Never send a route back where it came from.
+        if best.source == peer {
+            return Decision::no("came from this neighbor");
+        }
+        let own = best.source == LOCAL;
+        let filter = match &settings.export {
+            Export::None => return Decision::no("export none"),
+            Export::Own if !own => return Decision::no("export own: a learned route"),
+            Export::Own => None,
+            Export::Filter(filter) => Some(filter),
+        };
+        let attrs = self.pool.attrs(best.attrs);
+        let source = self.policy_source(best.source);
+        if let Err(reason) = policy::guard(source, settings.role, &attrs) {
+            return Decision::no(reason);
+        }
+        let mut rule = None;
+        if let Some(filter) = filter {
+            let view = RouteView {
+                prefix,
+                source,
+                attrs: &attrs,
+                local_asn,
+            };
+            let verdict = filter.verdict(&view);
+            if !verdict.accept {
+                return Decision {
+                    attrs: None,
+                    reason: if verdict.rule.is_some() {
+                        "rejected by the export filter"
+                    } else {
+                        "no rule of the export filter matches"
+                    },
+                    rule: verdict.rule,
+                };
+            }
+            rule = verdict.rule;
+        }
+        let extra_prepend = if own && self.drained.is_some() {
+            settings.drain_prepend
+        } else {
+            0
+        };
+        let mut out = export_attrs(attrs, local_asn, session.ibgp, !own, extra_prepend);
+        if let (Some(filter), Some(i)) = (filter, rule) {
+            policy::apply(&filter.rules[i], &mut out, local_asn);
+        }
+        out.extend(policy::egress(settings.role, local_asn, &out));
+        out.sort_by_key(PathAttr::type_code);
+        let reason = if filter.is_some() {
+            "accepted by the export filter"
+        } else {
+            "export own"
+        };
+        Decision::sent(out, reason, rule)
     }
 
     pub(super) fn route_refresh(&mut self, peer: SourceId, afi: Afi, safi: Safi) {
@@ -223,81 +363,72 @@ impl Rib {
             return None;
         }
         let mut batch = ExportBatch::default();
-        // By source attribute set; true: our own route.
-        let mut groups: HashMap<AttrId, (bool, Vec<Prefix>)> = HashMap::new();
-        let mut retain = Vec::new();
-        let mut release = Vec::new();
-
-        let state = self.peers.get_mut(&peer).expect("checked");
-        while batch.is_empty() && !state.out.dirty.is_empty() {
+        // By outgoing attribute set.
+        let mut groups: HashMap<AttrId, Vec<Prefix>> = HashMap::new();
+        loop {
+            let state = &self.peers[&peer];
+            if !batch.is_empty() || state.out.dirty.is_empty() {
+                break;
+            }
             let take: Vec<Prefix> = state.out.dirty.iter().take(EXPORT_BATCH).copied().collect();
-            for prefix in take {
+            let decided: Vec<(Prefix, Option<Vec<PathAttr>>)> = take
+                .into_iter()
+                .map(|prefix| (prefix, self.outgoing(peer, prefix)))
+                .collect();
+            let state = self.peers.get_mut(&peer).expect("checked");
+            for (prefix, wanted) in decided {
                 state.out.dirty.remove(&prefix);
-                let best = match prefix {
-                    Prefix::V4(p) => self.v4.best(&p),
-                    Prefix::V6(p) => self.v6.best(&p),
-                };
-                let own = best.is_some_and(|r| r.source == LOCAL);
-                let wanted = export_route(state, peer, prefix, best);
+                // The Adj-RIB-Out holds a reference to each set it names.
+                let wanted = wanted.map(|attrs| self.pool.intern(&attrs, None));
                 let current = state.out.advertised.get(&prefix).copied();
                 if wanted == current {
+                    if let Some(id) = wanted {
+                        self.pool.release(id);
+                    }
                     continue;
                 }
                 match wanted {
-                    Some(attrs) => {
-                        groups
-                            .entry(attrs)
-                            .or_insert((own, Vec::new()))
-                            .1
-                            .push(prefix);
-                        retain.push(attrs);
-                        state.out.advertised.insert(prefix, attrs);
+                    Some(id) => {
+                        groups.entry(id).or_default().push(prefix);
+                        state.out.advertised.insert(prefix, id);
                     }
                     None => {
                         batch.withdraw.push(prefix);
                         state.out.advertised.remove(&prefix);
                     }
                 }
-                release.extend(current);
-            }
-            if state.out.dirty.is_empty() {
-                batch.end_of_rib = std::mem::take(&mut state.out.eor_pending);
+                if let Some(old) = current {
+                    self.pool.release(old);
+                }
             }
         }
+        let state = self.peers.get_mut(&peer).expect("checked");
         if state.out.dirty.is_empty() && !state.out.eor_pending.is_empty() {
             batch.end_of_rib = std::mem::take(&mut state.out.eor_pending);
         }
         warn_missing_next_hops(state);
 
-        for (attrs, (own, prefixes)) in groups {
-            let extra_prepend = if own && self.drained.is_some() {
-                state.settings.drain_prepend
-            } else {
-                0
-            };
-            let (attrs, next_hop) = export_attrs(
-                &self.pool,
-                self.config.local_asn,
-                state,
-                attrs,
-                extra_prepend,
-            );
+        let state = &self.peers[&peer];
+        for (id, prefixes) in groups {
+            let mut attrs = self.pool.attrs(id);
+            if let Some(next_hop) = state.up.next_hop_ipv4 {
+                attrs.push(PathAttr::NextHop(next_hop));
+                attrs.sort_by_key(PathAttr::type_code);
+            }
+            let next_hop = state.up.next_hop_ipv6.map(|global| NextHop::V6 {
+                global,
+                link_local: state.up.next_hop_ipv6_link_local,
+            });
             batch.announce.push(Announce {
                 attrs,
                 next_hop,
                 prefixes,
             });
         }
-        for attrs in retain {
-            self.pool.retain(attrs);
-        }
-        for attrs in release {
-            self.pool.release(attrs);
-        }
         if batch.is_empty() {
             return None;
         }
-        state.out.ready = false;
+        self.peers.get_mut(&peer).expect("checked").out.ready = false;
         Some(batch)
     }
 

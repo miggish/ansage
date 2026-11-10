@@ -10,6 +10,10 @@ use super::{Table, as_path, list, text};
 pub fn rib(v: &Value) -> String {
     let routes = list(&v["routes"]);
     let mut out = String::new();
+    let sent_to = v["sent_to"].as_str();
+    if let Some(neighbor) = sent_to {
+        let _ = writeln!(out, "Sent to {neighbor}: {} prefixes", text(&v["total"]));
+    }
     if routes.is_empty() {
         out.push_str("No routes.\n");
     } else {
@@ -27,6 +31,9 @@ pub fn rib(v: &Value) -> String {
         for r in routes {
             let mut communities: Vec<String> = list(&r["communities"]).iter().map(text).collect();
             communities.extend(list(&r["large_communities"]).iter().map(text));
+            if let Some(asn) = r["only_to_customer"].as_u64() {
+                communities.push(format!("otc:{asn}"));
+            }
             let mut next_hop = match r["next_hop_link_local"].as_str() {
                 Some(ll) => format!("{} ({ll})", text(&r["next_hop"])),
                 None => text(&r["next_hop"]),
@@ -37,7 +44,11 @@ pub fn rib(v: &Value) -> String {
             table.row(vec![
                 if r["best"] == true { "*" } else { "" }.to_string(),
                 text(&r["prefix"]),
-                text(&r["source"]),
+                if sent_to.is_some() {
+                    "-".to_string()
+                } else {
+                    text(&r["source"])
+                },
                 next_hop,
                 as_path(&r["as_path"]),
                 text(&r["origin"]),

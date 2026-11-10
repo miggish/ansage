@@ -32,7 +32,7 @@ pub(super) fn api_request(name: &str, query: &str) -> Result<Request, ApiError> 
             Request::Peers { peer: get("peer") }
         }
         "rib" => {
-            allow(&["prefix", "family", "limit"])?;
+            allow(&["prefix", "family", "limit", "out"])?;
             let family = match get("family").as_deref() {
                 None => None,
                 Some("ipv4") => Some(RibFamily::Ipv4),
@@ -49,6 +49,7 @@ pub(super) fn api_request(name: &str, query: &str) -> Result<Request, ApiError> 
                 prefix: get("prefix"),
                 family,
                 limit,
+                out: get("out"),
             }
         }
         "fib" => {

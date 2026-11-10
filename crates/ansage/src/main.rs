@@ -5,6 +5,7 @@ mod daemon;
 mod fib;
 mod http;
 mod peer;
+mod policy;
 mod rib;
 
 use std::{
@@ -83,6 +84,10 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Some(Command::Test(test)) if test.offline => {
+            let path = args.config.unwrap_or_else(|| DEFAULT_CONFIG.into());
+            cli::test::offline(&path, args.json, &test)
         }
         Some(command) => {
             let socket = match socket_path(args.socket, args.config.as_deref()) {

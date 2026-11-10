@@ -32,7 +32,7 @@ pub use header::{
 };
 pub use notification::{Notification, cease_subcode, error_code};
 pub use open::{
-    AS_TRANS, BGP_VERSION, Capability, ExtendedNextHop, GrFamily, GracefulRestart, Open,
+    AS_TRANS, BGP_VERSION, Capability, ExtendedNextHop, GrFamily, GracefulRestart, Open, Role,
 };
 pub use prefix::{Prefix, Prefix4, Prefix6, PrefixError};
 pub use route_refresh::RouteRefresh;

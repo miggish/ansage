@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use super::{
     Context, DEFAULT_LIMIT, MAX_LIMIT, QUERY_TIMEOUT, RELOAD_TIMEOUT, json,
-    proto::{Family, PeerAction, PeerBrief, PeerDetail, Request, RibReply, RouteJson},
+    proto::{Family, PeerAction, PeerBrief, PeerDetail, Request, RibReply, RouteJson, TraceJson},
 };
 use crate::{
     fib::{FibMsg, FibQuery},
@@ -68,6 +68,17 @@ pub(crate) async fn answer(ctx: &Context, request: Request) -> Result<serde_json
                 .collect();
             json(details)
         }
+        Request::Test(test) => {
+            let query = test.query()?;
+            let trace = ask(ctx, |reply| Query::Test { query, reply }).await??;
+            let name = |id: SourceId| {
+                peers.iter().find(|h| h.neighbor.id == id).map_or_else(
+                    || format!("peer {id}"),
+                    |h| h.neighbor.address.ip().to_string(),
+                )
+            };
+            json(TraceJson::new(&trace, name))
+        }
         Request::Fib => json(ask_fib(ctx, FibQuery::Status).await?),
         Request::Reload => reload(ctx).await,
         Request::Restart { force, dry_run } => restart(ctx, force, dry_run).await,
@@ -90,6 +101,7 @@ pub(crate) async fn answer(ctx: &Context, request: Request) -> Result<serde_json
             prefix,
             family,
             limit,
+            out,
         } => {
             let name = |id: SourceId| {
                 peers.iter().find(|h| h.neighbor.id == id).map_or_else(
@@ -99,6 +111,39 @@ pub(crate) async fn answer(ctx: &Context, request: Request) -> Result<serde_json
             };
             let to_json =
                 |routes: Vec<RouteInfo>| routes.iter().map(|r| RouteJson::new(r, name)).collect();
+            if let Some(filter) = out {
+                if prefix.is_some() {
+                    return Err("give either prefix or out".into());
+                }
+                let selected: Vec<&PeerHandle> = peers
+                    .iter()
+                    .filter(|h| matches(&filter, h.neighbor.id, h.neighbor.address))
+                    .collect();
+                let [handle] = selected[..] else {
+                    return Err(format!("{filter:?} must match exactly one neighbor"));
+                };
+                let peer = handle.neighbor.id;
+                let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+                let mut total = 0;
+                let mut routes = Vec::new();
+                for afi in families(family) {
+                    let page: RoutePage = ask(ctx, |reply| Query::AdjOut {
+                        peer,
+                        afi,
+                        limit,
+                        reply,
+                    })
+                    .await?;
+                    total += page.total;
+                    routes.extend(page.routes);
+                }
+                return json(RibReply {
+                    total: Some(total),
+                    routes: to_json(routes),
+                    kernel: None,
+                    sent_to: Some(handle.neighbor.address.ip().to_string()),
+                });
+            }
             if let Some(prefix) = prefix {
                 if family.is_some() || limit.is_some() {
                     return Err("give either prefix or family/limit".into());
@@ -128,17 +173,13 @@ pub(crate) async fn answer(ctx: &Context, request: Request) -> Result<serde_json
                     total: None,
                     routes: to_json(routes),
                     kernel,
+                    sent_to: None,
                 });
             }
             let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
-            let afis = match family {
-                Some(Family::Ipv4) => vec![Afi::IPV4],
-                Some(Family::Ipv6) => vec![Afi::IPV6],
-                None => vec![Afi::IPV4, Afi::IPV6],
-            };
             let mut total = 0;
             let mut routes = Vec::new();
-            for afi in afis {
+            for afi in families(family) {
                 let page: RoutePage = ask(ctx, |reply| Query::Routes { afi, limit, reply }).await?;
                 total += page.total;
                 routes.extend(page.routes);
@@ -147,8 +188,17 @@ pub(crate) async fn answer(ctx: &Context, request: Request) -> Result<serde_json
                 total: Some(total),
                 routes: to_json(routes),
                 kernel: None,
+                sent_to: None,
             })
         }
+    }
+}
+
+fn families(family: Option<Family>) -> Vec<Afi> {
+    match family {
+        Some(Family::Ipv4) => vec![Afi::IPV4],
+        Some(Family::Ipv6) => vec![Afi::IPV6],
+        None => vec![Afi::IPV4, Afi::IPV6],
     }
 }
 

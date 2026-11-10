@@ -22,6 +22,8 @@ use crate::config::ImportPolicy;
 
 use crate::config::Neighbor;
 
+use crate::config::NeighborRole;
+
 use ansage_bgp::session::DownReason;
 
 use ansage_bgp::session::Fsm;
@@ -196,6 +198,10 @@ pub struct NeighborInfo {
     pub description: Option<String>,
     pub import: ImportPolicy,
     pub export: ExportPolicy,
+    /// What the neighbor is to us (RFC 9234).
+    pub role: Option<NeighborRole>,
+    /// Gets a default route while a provider session is up.
+    pub default_route: bool,
     pub max_prefixes_ipv4: Option<u32>,
     pub max_prefixes_ipv6: Option<u32>,
     /// Whether the session is signed with TCP-MD5 (never the key).
@@ -214,8 +220,10 @@ impl NeighborInfo {
             address: neighbor.socket_addr(),
             asn: neighbor.asn,
             description: neighbor.description.clone(),
-            import: neighbor.import,
-            export: neighbor.export,
+            import: neighbor.import.clone(),
+            export: neighbor.export.clone(),
+            role: neighbor.role,
+            default_route: neighbor.default_route,
             max_prefixes_ipv4: neighbor.max_prefixes_ipv4,
             max_prefixes_ipv6: neighbor.max_prefixes_ipv6,
             tcp_md5: neighbor.password.is_some(),
@@ -283,6 +291,9 @@ pub struct SessionStatus {
     /// off (would enabling it help?). Always sent, null when not offered:
     /// a missing field means an older ansage that does not know.
     pub peer_graceful_restart: Option<GrStatus>,
+    /// The BGP Role the peer sent (RFC 9234), its own: "customer" means it
+    /// says it is our customer. Null when it sent none.
+    pub peer_role: Option<&'static str>,
 }
 
 /// Graceful Restart as negotiated with the peer.
@@ -461,6 +472,7 @@ impl Reporter {
                     ibgp: peer.negotiated.ibgp,
                     graceful_restart: peer.graceful_restart.as_ref().map(gr_status),
                     peer_graceful_restart: peer.offered_graceful_restart.as_ref().map(gr_status),
+                    peer_role: peer.role.map(|r| r.name().unwrap_or("unknown")),
                 }),
                 _ => None,
             };
@@ -514,6 +526,8 @@ mod tests {
             description: None,
             import: ImportPolicy::None,
             export: ExportPolicy::Own,
+            role: None,
+            default_route: false,
             max_prefixes_ipv4: None,
             max_prefixes_ipv6: None,
             tcp_md5: false,
@@ -534,6 +548,8 @@ mod tests {
             passive: false,
             graceful_restart: None,
             extended_next_hop: false,
+            role: None,
+            strict_role: false,
         })
     }
 

@@ -21,7 +21,7 @@ use bytes::Bytes;
 use crate::wire::{
     Afi, Capability, DecodeError, ExtendedNextHop, GrFamily, GracefulRestart,
     MAX_EXTENDED_MESSAGE_LEN, MAX_MESSAGE_LEN, Message, MessageType, Negotiated, Notification,
-    Open, RouteRefresh, Safi, Update, cease_subcode, error_code,
+    Open, Role, RouteRefresh, Safi, Update, cease_subcode, error_code,
 };
 
 /// Hold time while waiting for the peer's OPEN (RFC 4271 §8.2.2: "4 minutes is
@@ -66,6 +66,11 @@ pub struct SessionConfig {
     /// Offer IPv6 next hops for IPv4 unicast routes (RFC 8950 Extended
     /// Next Hop Encoding). Agreed when the peer offers the same.
     pub extended_next_hop: bool,
+    /// Our BGP Role on this (eBGP) session, sent in the OPEN (RFC 9234).
+    pub role: Option<Role>,
+    /// With `role`: refuse a peer that sends no role (RFC 9234 §4.2 strict
+    /// mode).
+    pub strict_role: bool,
 }
 
 /// What both sides agreed on in the OPEN exchange.
@@ -84,6 +89,8 @@ pub struct PeerInfo {
     /// The peer's Graceful Restart capability, whether we sent ours or
     /// not: shows if enabling it would help with this peer.
     pub offered_graceful_restart: Option<PeerGr>,
+    /// The role the peer sent (RFC 9234), whether we sent one or not.
+    pub role: Option<Role>,
 }
 
 /// Graceful Restart as the peer offered it (RFC 4724 §3).
@@ -457,6 +464,9 @@ impl Fsm {
             Capability::RouteRefresh,
             Capability::ExtendedMessage,
         ];
+        if let Some(role) = self.config.role {
+            capabilities.push(Capability::Role(role));
+        }
         if self.config.extended_next_hop {
             capabilities.push(Capability::ExtendedNextHop(vec![
                 ExtendedNextHop::IPV4_UNICAST_OVER_IPV6,
@@ -501,6 +511,24 @@ impl Fsm {
         let ours = self.open().capabilities;
         let theirs = &open.capabilities;
         let has = |cap: &Capability| theirs.contains(cap);
+
+        // RFC 9234 §4.2: identical copies count once, different ones are a
+        // mismatch; only checked when we have a role ourselves.
+        let mut roles = theirs.iter().filter_map(|c| match c {
+            Capability::Role(role) => Some(*role),
+            _ => None,
+        });
+        let role = roles.next();
+        let several = roles.any(|r| Some(r) != role);
+        if let Some(local) = self.config.role {
+            let mismatch = match role {
+                Some(remote) => several || local.counterpart() != Some(remote),
+                None => self.config.strict_role,
+            };
+            if mismatch {
+                return self.fail(DecodeError::RoleMismatch.notification(), now, out);
+            }
+        }
 
         let peer_families: Vec<_> = theirs
             .iter()
@@ -565,6 +593,7 @@ impl Fsm {
             route_refresh: has(&Capability::RouteRefresh),
             graceful_restart,
             offered_graceful_restart,
+            role,
         });
 
         out.push(Action::Send(Message::Keepalive));
@@ -899,6 +928,8 @@ mod tests {
             passive: false,
             graceful_restart: None,
             extended_next_hop: false,
+            role: None,
+            strict_role: false,
         }
     }
 
@@ -1116,6 +1147,80 @@ mod tests {
             panic!("expected Up, got {out:?}");
         };
         (open, info.negotiated.extended_next_hop)
+    }
+
+    /// Opens a session with our `role` (strict or not) against a peer that
+    /// sends `theirs`: the peer's role if established, or the NOTIFICATION.
+    fn role_session(
+        role: Option<Role>,
+        strict: bool,
+        theirs: &[Role],
+    ) -> (Open, Result<Option<Role>, (u8, u8)>) {
+        let mut h = Harness::new();
+        h.fsm = Fsm::new(SessionConfig {
+            role,
+            strict_role: strict,
+            ..config()
+        });
+        h.event(Event::Start);
+        let out = h.event(Event::TcpConnected);
+        let [Action::Send(Message::Open(open))] = &out[..] else {
+            panic!("expected OPEN, got {out:?}");
+        };
+        let open = open.clone();
+        let mut caps = dual_stack();
+        caps.extend(theirs.iter().map(|r| Capability::Role(*r)));
+        let out = h.event(Event::Message(peer_open(64501, HOLD, caps)));
+        if let Some((code, subcode)) = out.iter().find_map(|a| match a {
+            Action::Send(Message::Notification(n)) => Some((n.code, n.subcode)),
+            _ => None,
+        }) {
+            return (open, Err((code, subcode)));
+        }
+        let mut out = h.event(Event::Message(Message::Keepalive));
+        let Some(Action::Up(info)) = out.pop() else {
+            panic!("expected Up, got {out:?}");
+        };
+        (open, Ok(info.role))
+    }
+
+    #[test]
+    fn role_negotiation() {
+        let mismatch = Err((error_code::OPEN_MESSAGE, 11));
+        // We are the provider: the peer must say customer.
+        let (open, result) = role_session(Some(Role::PROVIDER), false, &[Role::CUSTOMER]);
+        assert!(
+            open.capabilities
+                .contains(&Capability::Role(Role::PROVIDER))
+        );
+        assert_eq!(result, Ok(Some(Role::CUSTOMER)));
+        assert_eq!(
+            role_session(Some(Role::PROVIDER), false, &[Role::PEER]).1,
+            mismatch
+        );
+        // Copies of the same role count once, different ones are a mismatch.
+        let same = [Role::CUSTOMER, Role::CUSTOMER];
+        assert_eq!(
+            role_session(Some(Role::PROVIDER), false, &same).1,
+            Ok(Some(Role::CUSTOMER))
+        );
+        let different = [Role::CUSTOMER, Role::PEER];
+        assert_eq!(
+            role_session(Some(Role::PROVIDER), false, &different).1,
+            mismatch
+        );
+        // No role from the peer: fine unless strict.
+        assert_eq!(role_session(Some(Role::PEER), false, &[]).1, Ok(None));
+        assert_eq!(role_session(Some(Role::PEER), true, &[]).1, mismatch);
+        // Without a role of our own nothing is checked or sent.
+        let (open, result) = role_session(None, false, &[Role::PEER]);
+        assert!(
+            !open
+                .capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::Role(_)))
+        );
+        assert_eq!(result, Ok(Some(Role::PEER)));
     }
 
     #[test]

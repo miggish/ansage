@@ -384,8 +384,9 @@ assert_le() {
 # config/srv-c/gen/PROJECT/, one directory per copy of the network), srv-c's
 # default config with changes. Keys: asn router_id hold_time announce (TOML
 # array body), r1 / r2 (0 = leave the neighbor out), r1_asn r2_asn r1_addr
-# r2_addr r2_port, r1_desc, r1_nh6 r2_nh6 (next_hop_ipv6, empty = none), r1_extra
-# r2_extra (more TOML lines for the neighbor), connect_retry max_connect_retry,
+# r2_addr r2_port, r1_desc, r1_nh6 r2_nh6 (next_hop_ipv6, empty = none), r1_import
+# r2_import (default all), r1_extra r2_extra (more TOML lines for the neighbor),
+# connect_retry max_connect_retry,
 # extra (TOML appended at the end, e.g. one more neighbor). top (top-level TOML
 # lines, e.g. listen).
 srv_c_conf() {
@@ -394,8 +395,8 @@ srv_c_conf() {
     local -A c=(
         [asn]=64502 [router_id]=203.0.113.23 [hold_time]=9 [connect_retry]=1 [max_connect_retry]=8 [extra]='' [top]=''
         [announce]='"198.51.100.0/24", "2001:db8:2::/48"'
-        [r1]=1 [r1_desc]='r1 (FRR)' [r1_asn]=64510 [r1_addr]=10.201.0.2 [r1_nh6]=2001:db8:201::10 [r1_extra]=''
-        [r2]=1 [r2_asn]=64511 [r2_addr]=10.201.0.3 [r2_port]=179 [r2_nh6]=2001:db8:201::10 [r2_extra]=''
+        [r1]=1 [r1_desc]='r1 (FRR)' [r1_asn]=64510 [r1_addr]=10.201.0.2 [r1_nh6]=2001:db8:201::10 [r1_import]=all [r1_extra]=''
+        [r2]=1 [r2_asn]=64511 [r2_addr]=10.201.0.3 [r2_port]=179 [r2_nh6]=2001:db8:201::10 [r2_import]=all [r2_extra]=''
     )
     local kv
     for kv in "$@"; do c[${kv%%=*}]=${kv#*=}; done
@@ -421,7 +422,7 @@ address = "${c[r1_addr]}"
 asn = ${c[r1_asn]}
 description = "${c[r1_desc]}"
 $nh1
-import = "all"
+import = "${c[r1_import]}"
 ${c[r1_extra]}
 TOML
         [ "${c[r2]}" = 0 ] || cat <<TOML
@@ -432,7 +433,7 @@ port = ${c[r2_port]}
 asn = ${c[r2_asn]}
 description = "r2 (BIRD)"
 $nh2
-import = "all"
+import = "${c[r2_import]}"
 ${c[r2_extra]}
 TOML
         printf '\n%s\n' "${c[extra]}"

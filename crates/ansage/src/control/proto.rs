@@ -9,6 +9,7 @@
 //! {"cmd":"rib","prefix":"192.0.2.77"}     the same for the longest match
 //! {"cmd":"fib"}                           kernel routes ([kernel])
 //! {"cmd":"rib","family":"ipv6","limit":50}
+//! {"cmd":"rib","out":"10.0.0.1"}        what that neighbor was sent
 //! {"cmd":"announce","prefixes":["192.0.2.0/24"]}   own prefixes, at runtime
 //! {"cmd":"withdraw","prefixes":["192.0.2.0/24"]}
 //! {"cmd":"peer","peer":"10.0.0.1","action":"disable","reason":"maintenance"}
@@ -17,13 +18,16 @@
 //! {"cmd":"restart","dry_run":true}       what a restart would do per neighbor
 //! {"cmd":"restart","force":false}        end the sessions so neighbors with
 //!                                         Graceful Restart keep our routes, exit 75
+//! {"cmd":"test","target":"203.0.113.0/24","from":"198.51.100.2","as_path":[64510]}
+//!                                         what ansage would do with that route
+//! {"cmd":"test","target":"192.0.2.77"}   the same for the route it has
 //! ```
 //! `"v":1` may be given; other versions are refused.
 //!
 //! Runtime changes are not written to the config: a restart (and a config
 //! reload) goes back to what the file says.
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ansage_bgp::session::State;
 
@@ -33,12 +37,15 @@ use ansage_bgp::wire::Origin;
 
 use ansage_bgp::wire::PathAttr;
 
+use ansage_bgp::wire::Prefix;
+
 use ansage_bgp::wire::SegmentType;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    config::{Community, LargeCommunityValue, NeighborRole},
     peer::status::{CounterSnapshot, NeighborInfo, PeerStatus, Timestamp},
-    rib::{LOCAL, PeerRibStatus, RouteInfo, SourceId, Stats},
+    rib::{LOCAL, PeerRibStatus, RouteInfo, SourceId, Stats, TestQuery, TestRoute, Trace},
 };
 
 /// Protocol version spoken by this build.
@@ -77,6 +84,10 @@ pub enum Request {
         /// At most this many routes per family (default 1000).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
+        /// What this neighbor (ID, address or address:port) was sent, with
+        /// the attributes it got, instead of the best routes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        out: Option<String>,
     },
     /// What ansage installed in the kernel.
     Fib,
@@ -110,6 +121,9 @@ pub enum Request {
     /// ANSAGE_CRASH_TEST=1 in its environment.
     Crash,
 
+    /// What ansage does with one route, step by step (`ansage test`).
+    Test(TestRequest),
+
     /// Disable, enable or reset one neighbor.
     Peer {
         /// ID, address or address:port; must match exactly one neighbor.
@@ -119,6 +133,180 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+}
+
+/// `ansage test`: with `from`, a route that neighbor could send for the
+/// prefix `target`; without, the route ansage has for `target` (a prefix, or
+/// an address: the longest prefix containing it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestRequest {
+    pub target: String,
+    /// Neighbor address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Default: the neighbor's AS (empty over iBGP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_path: Option<Vec<u32>>,
+    /// "asn:value".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub communities: Vec<String>,
+    /// "global:data1:data2".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub large_communities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub med: Option<u32>,
+    /// Default: the neighbor's address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_hop: Option<String>,
+    /// RFC 9234 Only-To-Customer, the AS that set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otc: Option<u32>,
+}
+
+impl TestRequest {
+    /// The RIB's form of the request.
+    pub fn query(&self) -> Result<TestQuery, String> {
+        let target = self.target.trim();
+        let Some(from) = &self.from else {
+            if let Ok(prefix) = target.parse::<Prefix>() {
+                return Ok(TestQuery::Prefix(prefix));
+            }
+            return match target.parse::<IpAddr>() {
+                Ok(addr) => Ok(TestQuery::Address(addr)),
+                Err(_) => Err(format!("{target:?} is neither a prefix nor an address")),
+            };
+        };
+        let prefix = target
+            .parse::<Prefix>()
+            .map_err(|err| format!("prefix {target:?}: {err}"))?;
+        let from = from
+            .parse::<IpAddr>()
+            .map_err(|_| format!("from: {from:?} is not an address"))?;
+        let next_hop = match &self.next_hop {
+            Some(addr) => Some(
+                addr.parse::<IpAddr>()
+                    .map_err(|_| format!("next hop {addr:?} is not an address"))?,
+            ),
+            None => None,
+        };
+        let communities = self
+            .communities
+            .iter()
+            .map(|c| Community::try_from(c.clone()).map(|c| c.0))
+            .collect::<Result<_, _>>()?;
+        let large_communities = self
+            .large_communities
+            .iter()
+            .map(|c| LargeCommunityValue::try_from(c.clone()).map(|c| c.0))
+            .collect::<Result<_, _>>()?;
+        Ok(TestQuery::Route(TestRoute {
+            from: Some(from),
+            prefix: Some(prefix),
+            as_path: self.as_path.clone(),
+            communities,
+            large_communities,
+            med: self.med,
+            next_hop,
+            otc: self.otc,
+        }))
+    }
+}
+
+/// Reply to `test`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TraceJson {
+    pub prefix: String,
+    /// The tested route as the neighbor sends it.
+    pub tested: Option<RouteJson>,
+    pub import: Option<ImportJson>,
+    /// Every route of the prefix (with the tested one in place), best first.
+    pub routes: Vec<RouteJson>,
+    pub tested_is_best: Option<bool>,
+    pub kernel: KernelJson,
+    pub exports: Vec<ExportJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportJson {
+    pub accepted: bool,
+    pub reason: &'static str,
+    pub filter: Option<String>,
+    /// The rule that decided, from 1.
+    pub rule: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KernelJson {
+    pub installed: bool,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExportJson {
+    pub id: SourceId,
+    pub neighbor: String,
+    pub role: Option<NeighborRole>,
+    /// Session up; otherwise both families and next hops are assumed.
+    pub up: bool,
+    pub sent: bool,
+    pub reason: &'static str,
+    pub filter: Option<String>,
+    /// The rule that decided, from 1.
+    pub rule: Option<usize>,
+    /// What goes out, without the next hop (the session's own address).
+    pub route: Option<RouteJson>,
+}
+
+impl TraceJson {
+    /// `name` names the neighbor a route came from.
+    pub fn new(trace: &Trace, name: impl Fn(SourceId) -> String) -> Self {
+        let rule = |r: Option<usize>| r.map(|i| i + 1);
+        Self {
+            prefix: trace.prefix.to_string(),
+            tested: trace.tested.as_ref().map(|r| RouteJson::new(r, &name)),
+            import: trace.import.as_ref().map(|i| ImportJson {
+                accepted: i.accepted,
+                reason: i.reason,
+                filter: i.filter.clone(),
+                rule: rule(i.rule),
+            }),
+            routes: trace
+                .candidates
+                .iter()
+                .map(|r| RouteJson::new(r, &name))
+                .collect(),
+            tested_is_best: trace.tested_is_best,
+            kernel: KernelJson {
+                installed: trace.kernel.installed,
+                reason: trace.kernel.reason,
+            },
+            exports: trace
+                .exports
+                .iter()
+                .map(|e| ExportJson {
+                    id: e.peer,
+                    neighbor: name(e.peer),
+                    role: e.role,
+                    up: e.up,
+                    sent: e.sent,
+                    reason: e.reason,
+                    filter: e.filter.clone(),
+                    rule: rule(e.rule),
+                    route: e.sent.then(|| {
+                        let info = RouteInfo {
+                            prefix: trace.prefix,
+                            source: LOCAL,
+                            best: false,
+                            attrs: e.attrs.clone(),
+                            mp_next_hop: None,
+                            unreachable: false,
+                        };
+                        RouteJson::new(&info, &name)
+                    }),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,6 +428,9 @@ pub struct RibReply {
     /// "absent" when ansage did not install it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel: Option<serde_json::Value>,
+    /// With `out`: the neighbor the routes went to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -266,6 +457,8 @@ pub struct RouteJson {
     pub communities: Vec<String>,
     /// "global:data1:data2".
     pub large_communities: Vec<String>,
+    /// RFC 9234 OTC: the AS that limited the route to customers.
+    pub only_to_customer: Option<u32>,
     /// Only from 2-octet peers before merging; usually empty.
     pub as4_path: Vec<Segment>,
     pub unknown: Vec<UnknownAttr>,
@@ -316,6 +509,7 @@ impl RouteJson {
             aggregator: None,
             communities: Vec::new(),
             large_communities: Vec::new(),
+            only_to_customer: None,
             as4_path: Vec::new(),
             unknown: Vec::new(),
         };
@@ -354,6 +548,7 @@ impl RouteJson {
                         })
                         .collect()
                 }
+                PathAttr::OnlyToCustomer(asn) => json.only_to_customer = Some(*asn),
                 PathAttr::Unknown { flags, code, value } => json.unknown.push(UnknownAttr {
                     code: *code,
                     flags: *flags,
@@ -416,7 +611,8 @@ mod tests {
             Request::Rib {
                 prefix: None,
                 family: Some(Family::Ipv6),
-                limit: Some(5)
+                limit: Some(5),
+                out: None,
             }
         );
         assert!(parse(r#"{"cmd":"reboot"}"#).is_err());

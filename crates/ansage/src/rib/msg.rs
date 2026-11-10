@@ -8,13 +8,13 @@ use std::{
 
 use crate::config::Config;
 
-use crate::config::ExportPolicy;
-
-use crate::config::ImportPolicy;
-
 use crate::config::Kernel;
 
 use crate::config::Neighbor;
+
+use crate::config::NeighborRole;
+
+use crate::policy::{Export, Import};
 
 use ansage_bgp::session::PeerInfo;
 
@@ -136,6 +136,9 @@ pub struct PeerUp {
 #[derive(Debug, PartialEq, Eq)]
 pub enum PeerMsg {
     Export(ExportBatch),
+    /// Ask the peer to send these families again (RFC 2918), after its
+    /// import policy changed.
+    RouteRefresh(Vec<Afi>),
     /// Close the session with `notification`, reconnect after `retry_after`.
     Teardown {
         notification: Notification,
@@ -200,8 +203,15 @@ impl RibConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct PeerSettings {
-    pub import: ImportPolicy,
-    pub export: ExportPolicy,
+    /// The neighbor's address and AS, also while its session is down.
+    pub address: Option<IpAddr>,
+    pub asn: u32,
+    pub import: Import,
+    pub export: Export,
+    /// What the neighbor is to us (RFC 9234).
+    pub role: Option<NeighborRole>,
+    /// Gets 0.0.0.0/0 and ::/0 while a provider session is up.
+    pub default_route: bool,
     pub max_prefixes_ipv4: Option<u32>,
     pub max_prefixes_ipv6: Option<u32>,
     /// Extra prepends of our AS on our own routes while drained (eBGP).
@@ -214,8 +224,12 @@ impl PeerSettings {
     /// What the RIB needs to know about `neighbor`.
     pub fn new(config: &Config, neighbor: &Neighbor) -> Self {
         Self {
-            import: neighbor.import,
-            export: neighbor.export,
+            address: Some(neighbor.address),
+            asn: neighbor.asn,
+            import: Import::new(config, &neighbor.import),
+            export: Export::new(config, &neighbor.export),
+            role: neighbor.role,
+            default_route: neighbor.default_route,
             max_prefixes_ipv4: neighbor.max_prefixes_ipv4,
             max_prefixes_ipv6: neighbor.max_prefixes_ipv6,
             drain_prepend: neighbor.drain_prepend,
@@ -237,6 +251,19 @@ pub enum Query {
     Longest {
         addr: IpAddr,
         reply: oneshot::Sender<Vec<RouteInfo>>,
+    },
+    /// Up to `limit` routes of a family as sent to `peer` (its
+    /// Adj-RIB-Out), sorted by prefix.
+    AdjOut {
+        peer: SourceId,
+        afi: Afi,
+        limit: usize,
+        reply: oneshot::Sender<RoutePage>,
+    },
+    /// `ansage test`: one route, step by step.
+    Test {
+        query: super::TestQuery,
+        reply: oneshot::Sender<Result<super::Trace, String>>,
     },
     /// Up to `limit` best routes of a family. The tables are hash maps, so
     /// this is a sample sorted by prefix, not a page of a stable order.

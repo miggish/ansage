@@ -411,6 +411,8 @@ async fn session(stream: TcpStream, table: Arc<Table>) -> io::Result<()> {
             .ok()
             .and_then(|s| s.parse().ok()),
         extended_next_hop: false,
+        role: None,
+        strict_role: false,
     });
 
     let (control_tx, mut control_rx) = mpsc::channel::<Bytes>(16);

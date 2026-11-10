@@ -35,8 +35,8 @@ use crate::config::{Config, Md5Key, Neighbor};
 use ansage_bgp::{
     session::{Action, DownReason, Event, Fsm, PeerInfo, RejectReason, SessionConfig, State},
     wire::{
-        Message, MessageType, Negotiated, Notification, Update, cease_subcode, error_code,
-        split_message,
+        Message, MessageType, Negotiated, Notification, RouteRefresh, Safi, Update, cease_subcode,
+        error_code, split_message,
     },
 };
 use bytes::{Bytes, BytesMut};
@@ -381,6 +381,14 @@ pub async fn run(
                             pending.push_back(RibMsg::Ready { peer: id });
                         } else {
                             waiting_for_room = Some(c.data.clone());
+                        }
+                    }
+                }
+                Some(PeerMsg::RouteRefresh(families)) => {
+                    if let Some(c) = &conn {
+                        for afi in families {
+                            let refresh = RouteRefresh { afi, subtype: 0, safi: Safi::UNICAST };
+                            c.send_control(&Message::RouteRefresh(refresh), fsm.negotiated());
                         }
                     }
                 }

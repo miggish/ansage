@@ -25,6 +25,8 @@ fn neighbor(id: SourceId, address: &str) -> NeighborInfo {
         description: Some(format!("router {id}")),
         import: ImportPolicy::All,
         export: ExportPolicy::Own,
+        role: None,
+        default_route: false,
         max_prefixes_ipv4: None,
         max_prefixes_ipv6: None,
         tcp_md5: false,

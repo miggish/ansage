@@ -69,7 +69,7 @@ pub fn reload(v: &Value) -> String {
         ("added", "Neighbors added"),
         ("removed", "Neighbors removed"),
         ("restarted", "Neighbors reconnecting with new settings"),
-        ("updated", "Descriptions updated"),
+        ("updated", "Neighbors updated without reconnecting"),
         ("announce", "Prefixes announced"),
         ("withdraw", "Prefixes withdrawn"),
     ] {
