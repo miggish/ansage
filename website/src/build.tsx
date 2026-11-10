@@ -92,7 +92,7 @@ write(
 	"llms.txt",
 	`# ansage
 
-> BGP speaker that announces your own prefixes (anycast, a VPS's IPv6 range). Re-exporting routes is planned.
+> BGP router for Linux, written in Rust, growing into a replacement for BIRD and FRR. Safe by default: a new config sends only your own prefixes and accepts nothing. Today it announces your own prefixes (anycast, a VPS's IPv6 range), passes routes on to customers with roles and filters, and installs learned routes into the Linux kernel.
 
 Every page is available as Markdown: append \`.md\` to its URL, or send \`Accept: text/markdown\`.
 All pages in one file: /llms-full.txt

@@ -1,9 +1,13 @@
 # ansage
 
-BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
-range) to one or more routers. With roles (RFC 9234) and filters it passes routes
-on to customers; with `[kernel]` it installs the best routes it learns into the
-Linux routing table.
+ansage is a BGP router for Linux, written in Rust. It is growing into a
+replacement for BIRD and FRR, and is safe by default: a new config sends only
+your own prefixes and accepts nothing.
+
+Today it announces your own prefixes (anycast services, a VPS's IPv6 range) to
+one or more routers. With roles (RFC 9234) and filters it passes routes on to
+customers; with `[kernel]` it installs the best routes it learns into the Linux
+routing table.
 
 - Runtime `ansage announce` / `ansage withdraw`, for health checks
 - Drain (RFC 8326) before maintenance, upgrades without dropping routes (Graceful Restart)

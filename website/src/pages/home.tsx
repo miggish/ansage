@@ -73,8 +73,8 @@ const agents = [
 export function HomePage({ dev }: { dev?: boolean }) {
 	return (
 		<Document
-			title="ansage: BGP for your own prefixes"
-			description="ansage is a small BGP speaker for anycast services and your own IPv4 and IPv6 ranges: announce, drain before maintenance, upgrade without dropping routes."
+			title="ansage: BGP router for Linux"
+			description="ansage is a BGP router for Linux, written in Rust and growing into a replacement for BIRD and FRR. Today it announces anycast services and your IPv4 and IPv6 ranges, passes routes on to customers, drains before maintenance and upgrades without dropping routes."
 			dev={dev}
 		>
 			<SiteHeader url="/" />
@@ -103,8 +103,9 @@ export function HomePage({ dev }: { dev?: boolean }) {
 							</h1>
 
 							<p className="mt-7 max-w-xl text-lg leading-relaxed text-fg-muted">
-								ansage is a small BGP speaker for anycast services and your own
-								IPv4 and IPv6 ranges. It announces them to your routers,{" "}
+								ansage is a BGP router for Linux, growing into a replacement for
+								BIRD and FRR. Today it announces anycast services and your IPv4
+								and IPv6 ranges to your routers,{" "}
 								<a
 									href="/docs/guides/drain"
 									className="text-fg underline decoration-fg-subtle underline-offset-4 hover:decoration-fg"

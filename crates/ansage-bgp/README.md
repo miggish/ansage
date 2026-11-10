@@ -1,7 +1,7 @@
 # ansage-bgp
 
 BGP-4 (RFC 4271) without I/O, from the [ansage](https://github.com/miggish/ansage)
-BGP speaker:
+BGP router:
 
 - `wire`: decode and encode OPEN, UPDATE, NOTIFICATION, KEEPALIVE and
   ROUTE-REFRESH for IPv4 and IPv6 unicast. 4-octet AS numbers (RFC 6793),

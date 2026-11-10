@@ -24,8 +24,7 @@ use config::Config;
 /// Config file used when `--config` is not given.
 const DEFAULT_CONFIG: &str = "ansage.toml";
 
-/// BGP speaker that announces your own prefixes. Without a command it runs
-/// the daemon.
+/// BGP router for Linux. Without a command it runs the daemon.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

@@ -1,6 +1,6 @@
 [package]
 name = "ansage"
-description = "BGP speaker that announces your own prefixes"
+description = "BGP router for Linux"
 publish = false
 version.workspace = true
 authors.workspace = true

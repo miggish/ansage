@@ -3,8 +3,11 @@ title: Introduction
 description: ansage announces your own prefixes over BGP, and with filters and roles passes routes on to customers.
 ---
 
-ansage is a BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
-range) to one or more routers. By default that is all it sends; with
+ansage is a BGP router for Linux, written in Rust. It is growing into a replacement for BIRD
+and FRR, and is safe by default: a new config sends only your own prefixes and accepts nothing.
+
+Today it announces your own prefixes (anycast services, a VPS's IPv6 range) to one or more
+routers. With
 [roles and filters](/docs/guides/transit) it also passes learned routes on, e.g. a transit's
 table to your customers. With `[kernel]` it installs the best routes it learns into the Linux
 routing table.

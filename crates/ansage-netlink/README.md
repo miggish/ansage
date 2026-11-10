@@ -1,7 +1,7 @@
 # ansage-netlink
 
 Linux rtnetlink (`NETLINK_ROUTE`) without a C library, from the
-[ansage](https://github.com/miggish/ansage) BGP speaker: the subset needed
+[ansage](https://github.com/miggish/ansage) BGP router: the subset needed
 to install routes and to watch interfaces and addresses.
 
 - Build requests into a `Batch` (several per buffer, one `send`): routes,
