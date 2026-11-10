@@ -1,0 +1,40 @@
+---
+title: Securing sessions
+description: TCP-MD5 keys, GTSM, and who may use the control socket and the API.
+---
+
+## TCP-MD5 (RFC 2385)
+
+```toml
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+password_file = "keys/r1"    # or password = "..."
+```
+
+`password_file` is read at (re)load, relative to the config; one trailing newline is ignored.
+The installer creates `/etc/ansage` as root:ansage with files 0640, since they may hold keys.
+
+## GTSM (RFC 5082)
+
+```toml
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+ttl_security = 1             # at most this many hops away (1 = directly connected)
+```
+
+Packets with a lower TTL are dropped.
+
+The router needs the same key and GTSM setting, see [Router configs](/docs/guides/router-config#tcp-md5-and-gtsm).
+
+## Local access
+
+- **Control socket** (`control_socket`, default `/run/ansage/ansage.sock`, empty: off): members
+  of group `ansage` may use it (`ansage show`, `announce`, `drain`, ...). The installer adds
+  `--operator USER` to that group.
+- **Metrics and API** (`metrics_listen`): include session details and routes, so bind them to an
+  address only trusted hosts reach. See [Metrics and API](/docs/guides/metrics-api).
+- **Own prefixes only, for now**: `export = "own"` is the only export policy until re-exporting
+  comes in a later release, and `import = "none"` (RFC 8212) is the default, so nothing learned
+  is used unless you ask for it.

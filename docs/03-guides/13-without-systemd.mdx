@@ -1,0 +1,62 @@
+---
+title: Run without systemd
+description: Run ansage in a container or under another supervisor, and what ansage upgrade needs from it.
+---
+
+ansage runs the same without systemd: the readiness messages (`READY=1`, `RELOADING=1`,
+`STOPPING=1`) are only sent when `NOTIFY_SOCKET` is set. What a supervisor has to provide:
+
+| ansage does | the supervisor should |
+|---|---|
+| runs in the foreground, logs to stdout | keep it in the foreground, collect stdout |
+| exits 0 after SIGTERM/SIGINT | not restart it |
+| exits 1 on an error (bad config, cannot bind) | restart it after a delay |
+| exits **75** for `ansage upgrade` | **restart it at once**, with the binary now at its path |
+| reloads on SIGHUP | send SIGHUP on reload (or run `ansage reload`) |
+
+## ansage upgrade
+
+`ansage upgrade` refuses when nothing would start ansage again:
+
+```txt
+Would be refused without --force: ansage does not run under systemd (no NOTIFY_SOCKET, no ANSAGE_SUPERVISED=1): nothing would start it again
+```
+
+Set `ANSAGE_SUPERVISED=1` in ansage's environment once your supervisor restarts it on exit 75.
+
+## Docker / Compose
+
+```yaml title="compose.yaml"
+services:
+  ansage:
+    image: debian:stable-slim
+    command: ["/usr/local/bin/ansage", "--config", "/etc/ansage/ansage.toml"]
+    network_mode: host               # BGP and the service address live on the host
+    restart: unless-stopped          # also restarts after exit 75
+    environment:
+      ANSAGE_SUPERVISED: "1"
+    cap_add: [NET_BIND_SERVICE]      # with listen on port 179; NET_ADMIN with [kernel]
+    stop_grace_period: 45s           # longer than drain_time + 15 s
+    volumes:
+      - ./ansage:/usr/local/bin/ansage:ro
+      - ./ansage.toml:/etc/ansage/ansage.toml:ro
+      - ./run:/run/ansage
+```
+
+The binary is static (musl), so any base image works. `docker compose exec ansage ansage show
+summary` uses the control socket inside the container.
+
+<Callout type="warn" title="Stop timeout">
+With `drain_time`, a stop takes that long plus up to 3 s per neighbor to close the sessions.
+Under systemd ansage extends the stop timeout itself; other supervisors need a long enough
+grace period, or they kill ansage mid-drain.
+</Callout>
+
+## In the foreground
+
+```sh
+ansage --config ./ansage.toml --log-format text
+```
+
+Ctrl-C stops it (with `drain_time`: drains first, a second Ctrl-C stops at once). Colors are only
+used on a terminal; `NO_COLOR` turns them off.

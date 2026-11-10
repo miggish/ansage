@@ -1,0 +1,75 @@
+---
+title: Upgrades without dropping routes
+description: Replace the binary while neighbors keep forwarding to you, with Graceful Restart.
+---
+
+With `graceful_restart = true` (off by default; `restart_time`, default 30 s, also per
+neighbor), ansage and its neighbors use Graceful Restart (RFC 4724) with the N bit
+(RFC 8538). How ansage goes away then decides what the neighbors do with our routes:
+
+| Event | ansage sends | Neighbors |
+|---|---|---|
+| `ansage upgrade` | Cease 6/2 "ansage restarting" (N bit) or nothing | keep our routes as stale, then refresh them |
+| `systemctl stop` / SIGTERM, `peer disable` | Hard Reset (N bit) or Cease (after `drain_time`) | withdraw at once |
+| ansage panics | Hard Reset / Cease from the panic hook | withdraw at once |
+| kill -9, OOM kill | nothing | keep the routes for `restart_time` |
+
+## Deploying a new binary
+
+```sh
+ansage upgrade --dry-run                  # per neighbor: keeps or withdraws our routes
+install -m 0755 ansage /usr/local/bin/ansage.new
+mv -f /usr/local/bin/ansage.new /usr/local/bin/ansage   # atomic; the running one is unaffected
+ansage upgrade --binary /usr/local/bin/ansage || rollback
+```
+
+`ansage upgrade` checks the binary (`--version`, `check` against the running config) before
+anything happens. It refuses if an Established neighbor has no graceful restart (it would
+withdraw) or if nothing would start ansage again (not under systemd), unless `--force`.
+
+Then it exits ansage with status 75, which the unit restarts at once, and waits until every
+neighbor is back with our full table. It exits 0 only then, so a deploy script can roll back.
+
+<Callout type="info">
+The installer does this for you with `--restart`. A drain ends with the upgrade.
+</Callout>
+
+## A deploy script with rollback
+
+```sh title="deploy-ansage.sh"
+#!/bin/sh
+set -eu
+new=$1                                     # the new binary
+bin=/usr/local/bin/ansage
+
+ansage upgrade --dry-run
+cp -p "$bin" "$bin.prev"
+install -m 0755 "$new" "$bin.new" && mv -f "$bin.new" "$bin"
+
+if ! ansage upgrade --binary "$bin"; then
+    echo "upgrade failed, rolling back" >&2
+    mv -f "$bin.prev" "$bin"
+    systemctl restart ansage
+    exit 1
+fi
+rm -f "$bin.prev"
+ansage show summary
+```
+
+`ansage upgrade` checks the new binary before it stops anything, so a binary that does not run
+or rejects the config leaves the old ansage running.
+
+## Enable Graceful Restart
+
+```toml
+graceful_restart = true
+restart_time = 60          # neighbors keep our routes this long (1 to 4095 s)
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+# graceful_restart = false   # per neighbor, e.g. for a router that cannot do it
+```
+
+The router has to support it as well, see [Router configs](/docs/guides/router-config#graceful-restart).
+`ansage show peer` and `ansage_peer_graceful_restart` show whether it was negotiated.

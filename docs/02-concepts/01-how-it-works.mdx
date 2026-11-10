@@ -1,0 +1,80 @@
+---
+title: How ansage works
+description: Sessions, the RIB, own prefixes, import and export, and how ansage picks the best route.
+---
+
+ansage is one process with one BGP session per configured neighbor, one routing table (the RIB),
+a control socket for the `ansage` commands and, optionally, an HTTP listener for metrics and a
+thread that writes routes into the kernel.
+
+```txt
+              ansage.toml
+                   |
+   +---------------+----------------+
+   |               |                |
+ neighbor 1    neighbor 2   ...  own prefixes (announce, ansage announce/withdraw)
+   |               |                |
+   +---- import ---+----> RIB <-----+
+                           |
+              export "own" | best routes
+                 v         v
+          to every     [kernel] (optional)
+          neighbor     ip route ... proto bgp
+```
+
+## Sessions
+
+Each `[[neighbor]]` runs the BGP state machine of RFC 4271 (Idle, Connect, Active, OpenSent,
+OpenConfirm, Established). ansage connects out every `connect_retry` seconds; after a failed
+connect, or when the neighbor shuts the session down, the delay doubles up to
+`max_connect_retry` and resets once a session is up. With `listen` it also accepts connections,
+but only from configured neighbor addresses; a `passive` neighbor is never connected to.
+
+Every session negotiates IPv4 and IPv6 unicast, 4-octet AS numbers, route refresh, extended
+messages and, if enabled, Graceful Restart. Both families run over one session, IPv4 or IPv6,
+see [Next hops](/docs/guides/next-hops).
+
+## Own prefixes
+
+The prefixes in `announce` are ansage's own. They go to every neighbor, are the best route for
+their prefix whatever a neighbor sends, and never go into the kernel. `ansage announce` and
+`ansage withdraw` change the set at runtime until the next restart; a reload applies only what
+changed in the file, so runtime changes survive it.
+
+## Import and export
+
+| Direction | Setting | Values |
+|---|---|---|
+| from a neighbor | `import` | `none` (default, RFC 8212): nothing is stored; `all`: every valid route is stored |
+| to a neighbor | `export` | `own` (only value): our own prefixes, never learned routes |
+
+Because of `export = "own"`, ansage cannot become a transit AS by accident. Re-exporting learned
+routes is planned for a later release.
+
+A route is not stored when its AS path contains ansage's own AS (a loop), and UPDATEs with
+broken attributes are handled per RFC 7606: treated as a withdraw, or the bad attribute is
+discarded, instead of tearing the session down.
+
+## Best path
+
+Of all routes for one prefix, ansage picks one in this order:
+
+1. Own prefixes beat anything learned.
+2. A route whose next hop is unreachable (with `[kernel]`) is ranked last.
+3. Highest LOCAL_PREF. It only counts on iBGP; a route with GRACEFUL_SHUTDOWN counts as LOCAL_PREF 0,
+   also on eBGP (RFC 8326).
+4. Shortest AS path.
+5. Lowest ORIGIN (IGP, EGP, incomplete).
+6. Lowest MED among routes from the same neighbor AS (a missing MED is 0).
+7. eBGP over iBGP.
+8. Lowest BGP identifier, then lowest neighbor address.
+
+The best routes are what `ansage show rib` marks with `*` and, with `[kernel]`, what goes into the
+[routing table](/docs/guides/kernel-routes).
+
+## Control socket and HTTP
+
+`ansage show`, `announce`, `drain` and the other client commands send one request over the
+Unix control socket (`control_socket`, default `/run/ansage/ansage.sock`) and print the reply.
+`metrics_listen` adds Prometheus metrics and a read-only copy of the same answers as JSON, see
+the [HTTP API](/docs/reference/http-api).

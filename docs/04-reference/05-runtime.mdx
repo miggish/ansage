@@ -1,0 +1,76 @@
+---
+title: Signals, exit codes and files
+description: How ansage reacts to signals, what its exit codes mean, its environment variables, files and NOTIFICATIONs.
+---
+
+## Signals
+
+| Signal | Effect |
+|---|---|
+| SIGHUP | reload the config (like `ansage reload`, but the result is only logged) |
+| SIGTERM, SIGINT | stop: with `drain_time`, drain first; then close every session with Cease / Administrative Shutdown and remove kernel routes |
+| second SIGTERM/SIGINT during the drain | end the drain at once and stop |
+
+## Exit codes
+
+### Daemon
+
+| Code | Meaning | systemd unit |
+|---|---|---|
+| 0 | stopped by a signal | stays stopped |
+| 1 | error (invalid config, cannot bind, missing capability) | restarted after 5 s (`Restart=on-failure`) |
+| 75 | `ansage upgrade`: restart me | restarted at once (`RestartForceExitStatus=75`) |
+
+### Client commands
+
+0 on success, 1 on an error (no socket, unknown neighbor, invalid prefix, refused reload). `ansage
+upgrade` exits 0 only once every neighbor is back with our full table; `ansage check` 0 if the
+config is valid.
+
+## systemd notifications
+
+With `Type=notify-reload` (or `Type=notify`) ansage reports through `NOTIFY_SOCKET`:
+
+| Message | When |
+|---|---|
+| `READY=1` | sessions started (also after a reload) |
+| `RELOADING=1` | a reload begins |
+| `STOPPING=1` | a stop begins |
+| `EXTEND_TIMEOUT_USEC`, `STATUS=draining ...` | with `drain_time`: the stop timeout grows by the drain |
+
+## Environment
+
+| Variable | Effect |
+|---|---|
+| `RUST_LOG` | log filter, default `info`; e.g. `ansage=debug` |
+| `NO_COLOR` | no colors in text logs (colors are only used on a terminal anyway) |
+| `NOTIFY_SOCKET` | set by systemd; enables the notifications above |
+| `ANSAGE_SUPERVISED=1` | tells `ansage upgrade` that a supervisor restarts ansage on exit 75, see [Run without systemd](/docs/guides/without-systemd) |
+| `ANSAGE_VERSION`, `ANSAGE_BASE_URL` | installer only, see [Install](/docs/getting-started/install#installer-options) |
+
+## Files
+
+| Path | What | Owner, mode |
+|---|---|---|
+| `/usr/local/bin/ansage` | the binary | root, 0755 |
+| `/etc/ansage/ansage.toml` | the config | root:ansage, 0640 |
+| `/etc/ansage/*` | e.g. `password_file` keys | root:ansage, 0640 |
+| `/etc/ansage/*.bak.TIME` | files the installer replaced | |
+| `/etc/systemd/system/ansage.service` | the unit | root, 0644 |
+| `/run/ansage/ansage.sock` | control socket (`control_socket`) | ansage:ansage, 0660 |
+
+`ansage` without `--config` reads `./ansage.toml`; the client commands use `--socket`, else the
+`control_socket` of `--config`, else `/run/ansage/ansage.sock`.
+
+## NOTIFICATIONs ansage sends
+
+| Code | When |
+|---|---|
+| Cease / Administrative Shutdown (6/2) | stop, `ansage peer N disable` (with the `--reason` text, RFC 9003) |
+| Cease / Peer De-configured (6/3) | the neighbor was removed by a reload |
+| Cease / Administrative Reset (6/4) | `ansage peer N reset` |
+| Cease / Other Configuration Change (6/6) | the neighbor's settings changed in a reload |
+| Cease / Maximum Number of Prefixes Reached (6/1) | the neighbor exceeded `max_prefixes_ipv4/ipv6` |
+| Cease / Hard Reset (6/9) | wraps the above when the N bit (RFC 8538) is negotiated, so the neighbor drops our routes at once |
+| Cease 6/2 "ansage restarting", without Hard Reset | `ansage upgrade`: the neighbor keeps our routes as stale |
+| Hold Timer Expired, OPEN and UPDATE errors | protocol errors (RFC 4271, RFC 7606) |

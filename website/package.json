@@ -1,0 +1,48 @@
+{
+	"name": "ansage-website",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bun src/serve.ts --dev",
+		"build": "bun src/build.tsx",
+		"start": "bun src/serve.ts",
+		"check:md": "bun scripts/check-md.mjs",
+		"types:check": "tsc --noEmit",
+		"lint": "biome check",
+		"format": "biome check --write"
+	},
+	"dependencies": {
+		"@fontsource-variable/geist": "^5.3.0",
+		"@fontsource-variable/geist-mono": "^5.3.0",
+		"@mdx-js/mdx": "^3.1.1",
+		"@miggish/design": "^0.1.0",
+		"@shikijs/rehype": "^4.6.0",
+		"@tailwindcss/cli": "^4.3.5",
+		"@tailwindcss/typography": "^0.5.20",
+		"github-slugger": "^2.0.0",
+		"hast-util-to-string": "^3.0.1",
+		"lucide-react": "^1.70.0",
+		"pagefind": "^1.6.0",
+		"react": "^19.3.1",
+		"react-dom": "^19.3.1",
+		"remark-gfm": "^4.0.1",
+		"remark-mdx": "^3.1.1",
+		"remark-parse": "^11.0.0",
+		"remark-stringify": "^11.0.0",
+		"shiki": "^4.6.0",
+		"tailwindcss": "^4.3.5",
+		"unified": "^11.0.5",
+		"unist-util-visit": "^5.2.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.6",
+		"@types/bun": "^1.4.4",
+		"@types/hast": "^3.0.5",
+		"@types/mdast": "^4.0.4",
+		"@types/mdx": "^2.0.14",
+		"@types/react": "^19.3.0",
+		"@types/react-dom": "^19.3.0",
+		"typescript": "^7.0.2"
+	}
+}

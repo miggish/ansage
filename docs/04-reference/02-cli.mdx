@@ -1,0 +1,161 @@
+---
+title: CLI
+description: Every ansage command, its options and what it prints.
+---
+
+```txt
+ansage [--config FILE] [--log-format text|json]        run the daemon
+ansage [--config FILE] check                           validate a config
+ansage [-c FILE | -s SOCKET] [--json] COMMAND ...      talk to the running daemon
+ansage --version | --help
+```
+
+## Global options
+
+| Option | Meaning |
+|---|---|
+| `-c`, `--config FILE` | config file, default `ansage.toml` in the current directory. With a client command, its `control_socket` is used |
+| `-s`, `--socket PATH` | control socket for client commands; default: from `--config`, else `/run/ansage/ansage.sock` |
+| `--json` | client commands: print the raw JSON reply (the same as the [HTTP API](/docs/reference/http-api)) |
+| `--log-format text\|json` | daemon log format: text (colored on a terminal) or one JSON object per line |
+
+Client commands need access to the control socket: root, or a member of group `ansage`.
+
+## Daemon
+
+### `ansage`
+
+Runs the daemon in the foreground until SIGTERM/SIGINT; SIGHUP reloads.
+See [Signals, exit codes and files](/docs/reference/runtime).
+
+### `ansage check`
+
+```txt
+$ ansage check -c /etc/ansage/ansage.toml
+/etc/ansage/ansage.toml: OK, 1 neighbors, 2 own prefixes
+```
+
+Exits 1 with the reason if the file is invalid. It also reads `password_file`s.
+
+## Show
+
+### `ansage show summary`
+
+```txt
+ansage 0.2.0, AS 64500, router ID 203.0.113.1, up 4.0s
+RIB: 2 IPv4 and 2 IPv6 prefixes, 3 attribute sets
+Announcing: 192.0.2.0/24 2001:db8:1::/48
+
+ID  NEIGHBOR       AS     STATE        FOR   RCVD v4/v6  SENT v4/v6  DESCRIPTION
+1   10.0.0.1:179   64501  Established  4.0s  1/1         1/1         r1 (FRR)
+```
+
+While drained, a line `Drained for ...` follows `Announcing`.
+
+### `ansage show peers`, `ansage show peer NEIGHBOR`
+
+Every neighbor, or one (by ID, address or address:port), in detail:
+
+```txt
+Neighbor 10.0.0.1:179 (ID 1), AS 64501, "r1 (FRR)"
+  Policy: import all, export own, max prefixes IPv4 -, IPv6 -
+  Graceful restart: 30 s; peer keeps ours, we keep its for 30 s, N bit
+  State: Established for 33.8s, local 10.0.0.10:41532
+  Session: BGP ID 203.0.113.2, hold time 90 s, ipv4-unicast, ipv6-unicast, route refresh, 4-octet AS, extended messages, eBGP
+  Routes: received 1 IPv4, 1 IPv6; advertised 1 IPv4, 1 IPv6; 0 pending, initial sync done
+  Last down: 60.0s ago, administrative: cease (6/9) "maintenance"
+  Reconnect: backoff 30.0s
+  Messages in : 2 OPEN, 8 UPDATE, 0 NOTIFICATION, 3 KEEPALIVE, 0 ROUTE-REFRESH
+  Messages out: 2 OPEN, 14 UPDATE, 1 NOTIFICATION, 3 KEEPALIVE, 0 ROUTE-REFRESH
+  Prefixes sent: 9 announced, 1 withdrawn
+  Connects: 2 attempts, 0 failed, 2 established
+  Problems: 0 malformed UPDATEs, 0 with discarded attributes, 0 decode errors, 0 control / 0 data queue drops
+```
+
+### `ansage show rib [PREFIX | ADDRESS] [--family ipv4|ipv6] [--limit N]`
+
+Without an argument: the best route of every prefix, at most `--limit` (default 1000) per
+family. With a prefix: every candidate for exactly that prefix. With an address: the longest
+prefix containing it. `--family` and `--limit` only go without a prefix.
+
+```txt
+   PREFIX              SOURCE     NEXT HOP     AS PATH  ORIGIN  LOCAL PREF  MED  COMMUNITIES
+*  192.0.2.0/24        local      -            (empty)  igp     -           -    -
+*  198.51.100.0/24     10.0.0.1   10.0.0.1     64501    igp     -           -    -
+```
+
+### `ansage show fib`
+
+With `[kernel]`: the installed routes by state, and every BGP next hop with the gateway and
+interface it resolves through. See [Kernel routes](/docs/guides/kernel-routes).
+
+## Own prefixes
+
+### `ansage announce PREFIX...`, `ansage withdraw PREFIX...`
+
+```txt
+$ ansage withdraw 192.0.2.0/24
+Withdrawn: 192.0.2.0/24
+Own prefixes now: 2001:db8:1::/48
+$ ansage announce 192.0.2.0/24
+Announced: 192.0.2.0/24
+Own prefixes now: 2001:db8:1::/48, 192.0.2.0/24
+```
+
+Both are idempotent (`Already announced`, `Not announced`) and last until a restart; a reload
+keeps them. Prefixes are parsed strictly: `10.0.0.1/8` is refused (`host bits set, did you mean
+10.0.0.0/8?`). See [Health checks](/docs/guides/health-checks).
+
+## Drain
+
+### `ansage drain [--wait SECONDS]`, `ansage undrain`
+
+```txt
+$ ansage drain
+Drained: our routes go out with GRACEFUL_SHUTDOWN 65535:0 until `ansage undrain`
+$ ansage undrain
+Drain ended: our routes go out as usual
+```
+
+`--wait` returns only once the drain is that many seconds old (an earlier drain counts). See
+[Drain a site](/docs/guides/drain).
+
+## Neighbors
+
+### `ansage peer NEIGHBOR disable [--reason TEXT] | enable | reset`
+
+```txt
+$ ansage peer 10.0.0.1 disable --reason maintenance
+Neighbor 10.0.0.1:179 (ID 1): disable requested
+```
+
+See [Take one neighbor down](/docs/guides/peer-maintenance).
+
+## Config and restarts
+
+### `ansage reload`
+
+Re-reads the config and applies what changed, like SIGHUP but with the result:
+
+```txt
+$ ansage reload
+Config reloaded, nothing changed
+```
+
+See [Reload the config](/docs/guides/reload).
+
+### `ansage upgrade [--binary PATH] [--dry-run] [--force] [--timeout SECONDS]`
+
+| Option | Meaning |
+|---|---|
+| `--binary PATH` | the binary systemd will start; checked with `--version` and `check` against the running config first |
+| `--dry-run` | only show, per neighbor, whether it keeps or withdraws our routes |
+| `--force` | restart even if a neighbor would withdraw our routes, or nothing would start ansage again |
+| `--timeout SECONDS` | how long to wait for the neighbors; default: the restart time |
+
+```txt
+$ ansage upgrade --dry-run
+  10.0.0.1:179                             keeps our routes for 30 s (Cease without Hard Reset)
+```
+
+See [Upgrades without dropping routes](/docs/guides/upgrades).

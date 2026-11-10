@@ -1,0 +1,27 @@
+---
+title: Reload the config
+description: Apply config changes without a restart; only what changed touches the sessions.
+---
+
+```sh
+ansage reload          # or SIGHUP, or systemctl reload ansage
+```
+
+A reload re-reads the file and applies only what changed:
+
+| Change | Effect |
+|---|---|
+| added neighbor | connects |
+| removed neighbor | gets Cease 6/3 |
+| changed neighbor | reconnects with Cease 6/6 |
+| new `description` | nothing on the wire |
+| own prefixes | follow the difference between the old and the new file |
+
+Because own prefixes follow the difference, a prefix withdrawn at runtime stays withdrawn.
+
+<Callout type="warn" title="Needs a restart">
+`asn`, `router_id`, `listen`, `control_socket` and `metrics_listen` need a restart; a reload
+that changes them is refused as a whole, like an invalid file.
+</Callout>
+
+The installer applies a new config the same way: checked with the new binary, then reloaded.

@@ -1,0 +1,62 @@
+---
+title: Learn routes
+description: Keep the routes neighbors send, limit how many, and look them up.
+---
+
+By default ansage stores nothing a neighbor sends (`import = "none"`, RFC 8212). Learned routes
+are useful to look at with `ansage show rib`, and with `[kernel]` they go into the Linux routing
+table, e.g. to send a server's outgoing traffic the way BGP says.
+
+## Keep a neighbor's routes
+
+```toml
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+import = "all"
+max_prefixes_ipv4 = 1000     # optional limits, see below
+max_prefixes_ipv6 = 1000
+```
+
+Apply with `ansage reload`; the session reconnects with the new policy.
+
+## Look them up
+
+```sh
+ansage show rib                    # best routes, at most 1000 per family
+ansage show rib --family ipv6 --limit 50
+ansage show rib 198.51.100.0/24    # every candidate for this exact prefix
+ansage show rib 198.51.100.7       # the longest prefix containing this address
+```
+
+```txt
+   PREFIX              SOURCE     NEXT HOP     AS PATH  ORIGIN  LOCAL PREF  MED  COMMUNITIES
+*  192.0.2.0/24        local      -            (empty)  igp     -           -    -
+*  198.51.100.0/24     127.0.0.1  127.0.0.1    64501    igp     -           -    -
+*  2001:db8:1::/48     local      -            (empty)  igp     -           -    -
+*  2001:db8:ffff::/48  127.0.0.1  2001:db8::2  64501    igp     -           -    -
+```
+
+`*` marks the best route, `local` our own prefixes. How ansage picks the best route is in
+[How ansage works](/docs/concepts/how-it-works#best-path).
+
+## Limit what a neighbor may send
+
+`max_prefixes_ipv4` / `max_prefixes_ipv6` protect ansage from a neighbor that suddenly sends a
+full table:
+
+- At 90 % of the limit ansage logs a warning (once per session).
+- Above the limit ansage closes the session with Cease / Maximum Number of Prefixes Reached
+  (RFC 4486) and connects again after `max_prefix_restart` seconds (default 300).
+
+## Routes ansage does not keep
+
+- Routes whose AS path contains our own AS (a loop).
+- Routes with broken attributes: treated as a withdraw or the attribute is discarded (RFC 7606);
+  counted in `ansage show peer` under `Problems` and in `ansage_peer_malformed_updates_total`.
+
+## Into the kernel
+
+Add a `[kernel]` section to install the best learned routes, see
+[Kernel routes](/docs/guides/kernel-routes). `install = false` on a neighbor keeps its routes
+in the RIB but out of the kernel.

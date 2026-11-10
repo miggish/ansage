@@ -1,0 +1,37 @@
+---
+title: Crates
+description: The cargo workspace and what each crate is for.
+---
+
+| crate | what |
+|---|---|
+| `crates/ansage` | the daemon and its CLI (not published) |
+| `crates/ansage-bgp` | BGP-4 messages and the session state machine, without I/O |
+| `crates/ansage-netlink` | Linux rtnetlink messages for routes, nexthops, links and addresses |
+
+## This website
+
+The pages are MDX in `docs/` at the repo root; the website that publishes them is in `website/`
+(Bun, MDX, Tailwind, Pagefind, Biome; a static build in `website/dist/`), code in `website/src/`.
+
+Number prefixes set the order in the sidebar and are left out of URLs:
+`docs/03-guides/05-drain.mdx` is `/docs/guides/drain`. A top-level folder is a sidebar section,
+named after the folder (an `index.mdx` in it sets another title). Links between pages use the
+URL (`/docs/guides/drain`), so renumbering a page breaks nothing.
+
+```sh
+cd website
+bun install
+bun run dev              # http://localhost:3000
+bun run build && bun run start
+bun run check:md         # against a running site: llms.txt, .md pages, no leftover JSX
+bun run lint             # Biome: lint + format check (tabs, double quotes)
+bun run format           # Biome: apply fixes and formatting
+```
+
+- The [config reference](/docs/reference/config) is generated from the doc comments in
+  `crates/ansage/src/config.rs` before every `dev` and `build`.
+- Every page is also served as Markdown for agents: `/docs/....md`, `Accept: text/markdown`,
+  `/llms.txt` and `/llms-full.txt`.
+- A new MDX component needs a Markdown form in `website/src/markdown.ts`, otherwise
+  the build fails.

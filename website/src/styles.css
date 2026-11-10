@@ -1,0 +1,412 @@
+@import "tailwindcss";
+
+@import "@miggish/design/tailwind.css";
+@import "@miggish/design/base.css" layer(base);
+@import "@miggish/design/components.css" layer(components);
+@plugin "@tailwindcss/typography";
+
+/* Dark when the system says so, unless the toggle chose light (data-theme="light" on <html>);
+   dark when the toggle chose dark. Without JavaScript the site simply follows the system. */
+@custom-variant dark {
+	@media (prefers-color-scheme: dark) {
+		&:where(
+				:root:not([data-theme="light"]),
+				:root:not([data-theme="light"]) *
+			) {
+			@slot;
+		}
+	}
+	&:where([data-theme="dark"], [data-theme="dark"] *) {
+		@slot;
+	}
+}
+
+@font-face {
+	font-family: "Geist";
+	font-style: normal;
+	font-display: swap;
+	font-weight: 100 900;
+	src: url("/assets/fonts/geist-latin-wght-normal.woff2")
+		format("woff2-variations");
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	font-style: normal;
+	font-display: swap;
+	font-weight: 100 900;
+	src: url("/assets/fonts/geist-mono-latin-wght-normal.woff2")
+		format("woff2-variations");
+}
+
+@theme {
+	/* the terminal panel stays dark in both themes */
+	--color-terminal: oklch(0.155 0.004 286);
+	--color-terminal-bar: oklch(0.21 0.005 286);
+	--color-terminal-foreground: oklch(0.96 0.003 286);
+	--color-terminal-muted: oklch(0.7 0.012 286);
+	--color-terminal-border: oklch(0.29 0.007 286);
+	/* the ok tone of the dark scheme: commands and the lines that matter */
+	--color-terminal-accent: oklch(0.76 0.16 155);
+
+	/* the frame column: max-w-frame */
+	--container-frame: 80rem;
+}
+
+/* The docs need sidebar, text and table of contents side by side: a wider column. The gutter
+   matches the px-4 md:px-10 of the sections. */
+:root {
+	--ds-content-width: 80rem;
+	--ds-gutter: 1rem;
+
+	@media (min-width: 768px) {
+		--ds-gutter: 2.5rem;
+	}
+}
+
+@layer base {
+	*,
+	::before,
+	::after {
+		border-color: var(--color-line);
+	}
+
+	html {
+		scrollbar-gutter: stable;
+	}
+
+	/* <summary> without the browser's triangle (Safari still draws it despite list-style) */
+	summary::-webkit-details-marker {
+		display: none;
+	}
+}
+
+/* scrolls, but without a visible scrollbar (the install command) */
+@utility no-scrollbar {
+	scrollbar-width: none;
+}
+
+/* ---------- tabs without JavaScript: radio inputs, labels, panels ----------
+   <div class="tabs"> <input type=radio>... <div class="tablist"><label>... </div>
+   <div class="panels"><div>panel 1</div>...</div> </div> */
+.tabs > input {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.tabs .panels > * {
+	display: none;
+}
+
+.tabs .tablist > label {
+	cursor: pointer;
+}
+
+/* one rule per position; six tabs are more than any page uses */
+.tabs:has(> input:nth-of-type(1):checked) .panels > :nth-child(1),
+.tabs:has(> input:nth-of-type(2):checked) .panels > :nth-child(2),
+.tabs:has(> input:nth-of-type(3):checked) .panels > :nth-child(3),
+.tabs:has(> input:nth-of-type(4):checked) .panels > :nth-child(4),
+.tabs:has(> input:nth-of-type(5):checked) .panels > :nth-child(5),
+.tabs:has(> input:nth-of-type(6):checked) .panels > :nth-child(6) {
+	display: block;
+}
+
+.tabs:has(> input:nth-of-type(1):focus-visible) .tablist > :nth-child(1),
+.tabs:has(> input:nth-of-type(2):focus-visible) .tablist > :nth-child(2),
+.tabs:has(> input:nth-of-type(3):focus-visible) .tablist > :nth-child(3),
+.tabs:has(> input:nth-of-type(4):focus-visible) .tablist > :nth-child(4),
+.tabs:has(> input:nth-of-type(5):focus-visible) .tablist > :nth-child(5),
+.tabs:has(> input:nth-of-type(6):focus-visible) .tablist > :nth-child(6) {
+	outline: 2px solid color-mix(in oklch, var(--color-fg) 40%, transparent);
+	outline-offset: -2px;
+}
+
+/* the anycast diagram: two states, "normal" and "drain" */
+.diagram .when-drain {
+	display: none;
+}
+
+.diagram:has(> input:nth-of-type(2):checked) .when-drain {
+	display: revert;
+}
+
+.diagram:has(> input:nth-of-type(2):checked) .when-normal {
+	display: none;
+}
+
+/* the mode labels look like the buttons of a .ds-segmented */
+.diagram .modes > label {
+	padding: 0.125rem 0.625rem;
+	color: var(--color-fg-muted);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	cursor: pointer;
+	transition: color 150ms;
+}
+
+.diagram .modes > label:hover {
+	color: var(--color-fg);
+}
+
+.diagram:has(> input:nth-of-type(1):checked) .modes > :nth-child(1),
+.diagram:has(> input:nth-of-type(2):checked) .modes > :nth-child(2) {
+	background-color: var(--color-surface-2);
+	color: var(--color-fg);
+	font-weight: 500;
+}
+
+.diagram > input {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.diagram:has(> input:nth-of-type(1):focus-visible) .modes > :nth-child(1),
+.diagram:has(> input:nth-of-type(2):focus-visible) .modes > :nth-child(2) {
+	outline: 2px solid color-mix(in oklch, var(--color-fg) 40%, transparent);
+	outline-offset: -2px;
+}
+
+/* docs tabs: underline on the active label */
+.tabs.doc-tabs .tablist > label {
+	border-bottom: 2px solid transparent;
+	color: var(--color-fg-muted);
+}
+
+.tabs.doc-tabs .tablist > label:hover {
+	color: var(--color-fg);
+}
+
+.tabs.doc-tabs .tablist > label {
+	transition: color 150ms;
+}
+
+.tabs.doc-tabs:has(> input:nth-of-type(1):checked) .tablist > :nth-child(1),
+.tabs.doc-tabs:has(> input:nth-of-type(2):checked) .tablist > :nth-child(2),
+.tabs.doc-tabs:has(> input:nth-of-type(3):checked) .tablist > :nth-child(3),
+.tabs.doc-tabs:has(> input:nth-of-type(4):checked) .tablist > :nth-child(4),
+.tabs.doc-tabs:has(> input:nth-of-type(5):checked) .tablist > :nth-child(5),
+.tabs.doc-tabs:has(> input:nth-of-type(6):checked) .tablist > :nth-child(6) {
+	border-color: var(--color-fg);
+	color: var(--color-fg);
+}
+
+/* terminal tabs on the home page: the active label is lighter */
+.tabs.terminal-tabs:has(> input:nth-of-type(1):checked)
+	.tablist
+	> :nth-child(1),
+.tabs.terminal-tabs:has(> input:nth-of-type(2):checked)
+	.tablist
+	> :nth-child(2),
+.tabs.terminal-tabs:has(> input:nth-of-type(3):checked)
+	.tablist
+	> :nth-child(3),
+.tabs.terminal-tabs:has(> input:nth-of-type(4):checked)
+	.tablist
+	> :nth-child(4) {
+	background-color: var(--color-terminal-bar);
+	color: var(--color-terminal-foreground);
+}
+
+/* dashed flow lines in the anycast diagram */
+@keyframes flow {
+	to {
+		stroke-dashoffset: -24;
+	}
+}
+
+.flow {
+	stroke-dasharray: 6 6;
+	animation: flow 0.9s linear infinite;
+}
+
+/* ---------- docs ---------- */
+
+/* steps: a numbered line down the side */
+.steps {
+	counter-reset: step;
+	border-left: 1px solid var(--color-line);
+	margin-left: 0.75rem;
+	padding-left: 1.75rem;
+}
+
+.step {
+	counter-increment: step;
+	position: relative;
+}
+
+/* Every step starts with an h3. Its top margin collapses through .step, so the step's top is
+   the heading's top: centre the 1.7rem counter on the heading's first line (prose h3: 1.25rem
+   at line-height 1.6 = 2rem). */
+.step::before {
+	content: counter(step);
+	position: absolute;
+	left: -2.6rem;
+	top: 0.15rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.7rem;
+	height: 1.7rem;
+	border: 1px solid var(--color-line);
+	background: var(--color-bg);
+	font-family: var(--font-mono);
+	font-size: var(--text-xs);
+	color: var(--color-fg-muted);
+}
+
+/* code: Shiki writes both themes as variables */
+.shiki,
+.shiki span {
+	color: var(--shiki-light);
+}
+
+[data-theme="dark"] .shiki,
+[data-theme="dark"] .shiki span {
+	color: var(--shiki-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) .shiki,
+	:root:not([data-theme="light"]) .shiki span {
+		color: var(--shiki-dark);
+	}
+}
+
+/* the docs text */
+.prose {
+	--tw-prose-body: var(--color-fg);
+	--tw-prose-headings: var(--color-fg);
+	--tw-prose-lead: var(--color-fg-muted);
+	--tw-prose-links: var(--color-fg);
+	--tw-prose-bold: var(--color-fg);
+	--tw-prose-counters: var(--color-fg-muted);
+	--tw-prose-bullets: var(--color-fg-muted);
+	--tw-prose-hr: var(--color-line);
+	--tw-prose-quotes: var(--color-fg);
+	--tw-prose-quote-borders: var(--color-line);
+	--tw-prose-code: var(--color-fg);
+	--tw-prose-th-borders: var(--color-line);
+	--tw-prose-td-borders: var(--color-line);
+	max-width: none;
+}
+
+.prose :where(h1, h2, h3):not(:where(.not-prose *)) {
+	letter-spacing: var(--tracking-tight);
+	font-weight: 600;
+	scroll-margin-top: 7rem;
+}
+
+.prose :where(a):not(:where(.not-prose *, .heading-anchor)) {
+	text-decoration-color: var(--color-fg-subtle);
+	text-underline-offset: 3px;
+	font-weight: 500;
+	transition: text-decoration-color 150ms;
+}
+
+.prose :where(a):not(:where(.not-prose *, .heading-anchor)):hover {
+	text-decoration-color: var(--color-fg);
+}
+
+.prose .heading-anchor {
+	color: inherit;
+	text-decoration: none;
+	font-weight: inherit;
+}
+
+.prose .heading-anchor:hover::after {
+	content: " #";
+	color: var(--color-fg-muted);
+}
+
+.prose :where(code):not(:where(pre *, .not-prose *)) {
+	border: 1px solid var(--color-line);
+	background: var(--color-surface-2);
+	padding: 0.1rem 0.3rem;
+	font-size: 0.875em;
+	font-weight: 400;
+}
+
+.prose :where(code):not(:where(pre *, .not-prose *))::before,
+.prose :where(code):not(:where(pre *, .not-prose *))::after {
+	content: none;
+}
+
+.prose :where(table):not(:where(.not-prose *)) {
+	font-size: var(--text-sm);
+}
+
+/* <details> open and close smoothly, in CSS only; older browsers just open them at once */
+@supports selector(::details-content) {
+	:root {
+		interpolate-size: allow-keywords;
+	}
+
+	details.smooth::details-content {
+		height: 0;
+		overflow: clip;
+		transition:
+			height 200ms ease,
+			content-visibility 200ms allow-discrete;
+	}
+
+	details.smooth[open]::details-content {
+		height: auto;
+	}
+}
+
+/* search: Pagefind's UI in our colours */
+#search-ui {
+	--pagefind-ui-primary: var(--color-fg);
+	--pagefind-ui-text: var(--color-fg);
+	--pagefind-ui-background: var(--color-surface);
+	--pagefind-ui-border: var(--color-line);
+	--pagefind-ui-tag: var(--color-surface-2);
+	--pagefind-ui-border-width: 1px;
+	--pagefind-ui-border-radius: 0;
+	--pagefind-ui-font: var(--font-sans);
+}
+
+dialog#search::backdrop {
+	background: oklch(0% 0 0 / 50%);
+	backdrop-filter: blur(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.flow {
+		animation: none;
+	}
+
+	details.smooth::details-content {
+		transition: none;
+	}
+}
+
+/* no outer margins inside a callout */
+.callout-body > :first-child {
+	margin-top: 0;
+}
+
+.callout-body > :last-child {
+	margin-bottom: 0;
+}
+
+/* docs: the sidebar and the table of contents stay in view below the header */
+.docs-rail {
+	position: sticky;
+	top: 3.5rem;
+	height: calc(100dvh - 3.5rem);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+}
+
+/* search hits in the ok tone instead of Pagefind's yellow */
+#search-ui mark {
+	background-color: color-mix(in oklch, var(--color-ok) 15%, transparent);
+	color: var(--color-fg);
+}

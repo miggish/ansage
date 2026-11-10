@@ -1,0 +1,105 @@
+---
+title: HTTP API
+description: The read-only JSON endpoints and the Server-Sent Events stream at metrics_listen.
+---
+
+With `metrics_listen = "127.0.0.1:9179"`, ansage serves Prometheus metrics and a read-only JSON
+copy of the control socket's answers. Nothing that changes state is reachable over HTTP.
+
+| Path | Query | Same as |
+|---|---|---|
+| `/` | | a one-line pointer to the other paths |
+| `/metrics` | any (ignored) | see [Metrics](/docs/reference/metrics) |
+| `/api/summary` | | `ansage show summary --json` |
+| `/api/peers` | `peer=ID\|ADDRESS\|ADDRESS:PORT` (optional) | `ansage show peers --json`, `show peer N --json` |
+| `/api/rib` | `prefix=P`, or `family=ipv4\|ipv6` and `limit=N` | `ansage show rib ... --json` |
+| `/api/fib` | | `ansage show fib --json` |
+| `/api/events` | | Server-Sent Events, below |
+
+## Behavior
+
+- `GET` and `HEAD` only; other methods get `405`.
+- Unknown query parameters or bad values get `400` with `{"error": "..."}`, unknown paths `404`.
+- One request per connection (`Connection: close`).
+- At most 8 requests at a time, and 4 open event streams; more are turned away (`503` for streams).
+- The request head must arrive within 5 s and be at most 8 KiB.
+- Times are unix milliseconds (`since`, `now`, `started`).
+
+## Examples
+
+```sh
+curl -s localhost:9179/api/summary | jq
+curl -s 'localhost:9179/api/peers?peer=10.0.0.1' | jq '.[0].status.state'
+curl -s 'localhost:9179/api/rib?prefix=198.51.100.0/24' | jq
+curl -s 'localhost:9179/api/rib?family=ipv6&limit=10' | jq
+```
+
+```json title="/api/summary"
+{
+  "version": "0.2.0",
+  "asn": 64500,
+  "router_id": "203.0.113.1",
+  "started": 1794070242614,
+  "now": 1794070263073,
+  "announce": ["2001:db8:1::/48", "192.0.2.0/24"],
+  "drained": null,
+  "rib": { "prefixes_ipv4": 2, "prefixes_ipv6": 2, "attr_sets": 3 },
+  "peers": [
+    {
+      "id": 1,
+      "address": "10.0.0.1:179",
+      "asn": 64501,
+      "description": "r1 (FRR)",
+      "state": "Established",
+      "since": 1794070242615,
+      "received_ipv4": 1,
+      "received_ipv6": 1,
+      "advertised_ipv4": 1,
+      "advertised_ipv6": 1
+    }
+  ]
+}
+```
+
+`drained` is the time the drain started, or `null`. Each entry of `/api/peers` has `neighbor`
+(the config), `status` (state, timers, `last_error`, `last_down`, the negotiated `session`),
+`counters` and `rib`.
+
+## Live events
+
+`/api/events` is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+stream, for a dashboard that updates without polling:
+
+| Event | When | Data |
+|---|---|---|
+| `summary` | at once, every 5 s and when the neighbors change (reload) | the `/api/summary` JSON |
+| `peer` | when a neighbor's state, timers or last error change | that neighbor's `/api/peers` entry |
+| `error` | when an answer fails | `{"error": "...", "event": "summary"}` |
+
+```sh
+curl -N localhost:9179/api/events
+```
+
+```txt
+event: summary
+data: {"announce":["2001:db8:1::/48","192.0.2.0/24"],"asn":64500,"drained":null,...}
+
+event: peer
+data: {"counters":{...},"neighbor":{...},"rib":{...},"status":{"state":"Established",...}}
+```
+
+In a browser (ansage sends no CORS headers, so serve the dashboard and `/api/` from the same
+origin, e.g. through a reverse proxy):
+
+```js
+const events = new EventSource("/api/events");
+events.addEventListener("peer", (e) => {
+	const peer = JSON.parse(e.data);
+	console.log(peer.neighbor.address, peer.status.state);
+});
+```
+
+<Callout type="warn" title="Trusted hosts only">
+The API includes session details and routes, and has no authentication: bind it to an address
+only trusted hosts reach, or put a reverse proxy with authentication in front.
+</Callout>

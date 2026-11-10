@@ -1,0 +1,63 @@
+---
+title: Introduction
+description: ansage announces your own prefixes over BGP. Re-exporting routes is planned.
+---
+
+ansage is a BGP speaker that announces your own prefixes (anycast services, a VPS's IPv6
+range) to one or more routers. For now it only announces: it does not re-export routes yet.
+With `[kernel]` it installs the best routes it learns into the Linux routing table.
+
+```toml title="/etc/ansage/ansage.toml"
+asn = 64500
+router_id = "203.0.113.1"
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+```
+
+## What it does
+
+- Announces the prefixes from the config, plus `ansage announce` / `ansage withdraw` at runtime.
+- Drains a site (RFC 8326) before maintenance, so traffic moves without a hard withdraw.
+- Upgrades without dropping routes (`ansage upgrade`, Graceful Restart).
+- Optionally installs the best learned routes into the Linux routing table (`[kernel]`).
+- Reports through `ansage show`, Prometheus metrics, a JSON API and live events.
+
+## What it does not do (yet)
+
+<Callout type="info" title="No re-export yet">
+ansage starts with announcing: it exports only its own prefixes (`export = "own"`) and does not
+pass learned routes on yet. Re-exporting is planned for a later release. Health checks live
+outside ansage, see [Health checks](/docs/guides/health-checks).
+</Callout>
+
+## Where to go
+
+<Cards>
+  <Card title="Install" href="/docs/getting-started/install">
+    One command, systemd unit included.
+  </Card>
+  <Card title="First session" href="/docs/getting-started/first-session">
+    A minimal config, start ansage, check the router.
+  </Card>
+  <Card title="Run an anycast service" href="/docs/guides/anycast">
+    One prefix from several servers, end to end.
+  </Card>
+  <Card title="Health checks" href="/docs/guides/health-checks">
+    Withdraw when the service fails, with a ready script.
+  </Card>
+  <Card title="Drain a site" href="/docs/guides/drain">
+    Move traffic away before maintenance.
+  </Card>
+  <Card title="Troubleshooting" href="/docs/guides/troubleshooting">
+    A session does not come up, a prefix is missing.
+  </Card>
+  <Card title="Config reference" href="/docs/reference/config">
+    Every setting, generated from the source.
+  </Card>
+  <Card title="CLI reference" href="/docs/reference/cli">
+    Every command with its output.
+  </Card>
+</Cards>

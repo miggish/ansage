@@ -247,7 +247,7 @@ scn_G8() {
     allow_flap srv-c
     trap 'srv_c_use ansage.toml; bird_restore r2' EXIT
     # G1 covers BIRD's default (aware); this is the explicit line from
-    # website/content/docs/guides/router-config.mdx.
+    # docs/03-guides/02-router-config.mdx.
     bird_use r2 '/^protocol bgp srv_c/,/^}/s/passive on;/passive on;\n    graceful restart on;/'
     g_start g8
     [ "$(ansage_peer srv-c 10.201.0.3 '.status.session.graceful_restart != null')" = true ] ||

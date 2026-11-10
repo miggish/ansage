@@ -1,0 +1,113 @@
+---
+title: First session
+description: Write a minimal config, start ansage and check that the neighbor has your prefixes.
+---
+
+<Steps>
+<Step>
+
+### Write a config
+
+```toml title="/etc/ansage/ansage.toml"
+asn = 64500
+router_id = "203.0.113.1"
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+```
+
+`ansage check -c /etc/ansage/ansage.toml` validates it without starting anything. Every
+setting is in the [config reference](/docs/reference/config).
+
+</Step>
+<Step>
+
+### Start ansage
+
+Under systemd (see [Install](/docs/getting-started/install)):
+
+```sh
+systemctl start ansage
+```
+
+Or in the foreground:
+
+```sh
+ansage --config /etc/ansage/ansage.toml [--log-format text|json]
+```
+
+</Step>
+<Step>
+
+### Check the session
+
+```sh
+ansage show summary
+```
+
+```txt
+ansage 0.2.0, AS 64500, router ID 203.0.113.1, up 4.0s
+RIB: 2 IPv4 and 2 IPv6 prefixes, 3 attribute sets
+Announcing: 192.0.2.0/24 2001:db8:1::/48
+
+ID  NEIGHBOR       AS     STATE        FOR   RCVD v4/v6  SENT v4/v6  DESCRIPTION
+1   10.0.0.1:179   64501  Established  4.0s  0/0         1/1         -
+```
+
+`Established` and `SENT 1/1`: the neighbor has both prefixes. `ansage show peer 10.0.0.1`
+shows the details, and why a session is not up. All client commands take `--json`, and
+`-s SOCKET` (or `-c CONFIG` to find its socket).
+
+</Step>
+<Step>
+
+### Check on the router
+
+<Tabs items={["FRR", "BIRD"]}>
+<Tab value="FRR">
+
+```sh
+vtysh -c 'show bgp ipv4 unicast 192.0.2.0/24'
+```
+
+</Tab>
+<Tab value="BIRD">
+
+```sh
+birdc show route 192.0.2.0/24 all
+```
+
+</Tab>
+</Tabs>
+
+The router needs a neighbor for ansage too, see [Router configs](/docs/guides/router-config).
+
+</Step>
+</Steps>
+
+## Who connects
+
+By default ansage connects to its neighbors and accepts nothing. To accept connections from
+configured neighbors as well, set `listen`; a neighbor with `passive = true` is never
+connected to, ansage waits for it:
+
+```toml
+listen = ["0.0.0.0:179", "[::]:179"]
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+passive = true
+```
+
+<Callout type="info">
+Port 179 needs CAP_NET_BIND_SERVICE; the systemd unit grants it.
+</Callout>
+
+## Next steps
+
+- One session carries IPv4 and IPv6: if it runs over IPv4, set `next_hop_ipv6`, see [Next hops](/docs/guides/next-hops).
+- Several servers with the same prefix: [Run an anycast service](/docs/guides/anycast).
+- Withdraw when the service fails: [Health checks](/docs/guides/health-checks).

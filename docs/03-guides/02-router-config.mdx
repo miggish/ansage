@@ -1,0 +1,122 @@
+---
+title: Router configs
+description: Peer FRR or BIRD with ansage; the configs ansage's end-to-end tests use.
+---
+
+ansage connects to its neighbors by default, so the router side can be passive. Both examples
+peer over IPv4 and carry IPv6 routes on the same session. They are trimmed from
+`test/e2e/config/` in the ansage repo, where they run against ansage on every pull request.
+
+<Tabs items={["FRR", "BIRD 3"]}>
+<Tab value="FRR">
+
+```txt title="/etc/frr/frr.conf"
+router bgp 64510
+ bgp router-id 203.0.113.11
+ no bgp ebgp-requires-policy
+ no bgp default ipv4-unicast
+ neighbor 10.201.11.10 remote-as 64500
+ neighbor 10.201.11.10 description srv-a
+ neighbor 10.201.11.10 passive
+ !
+ address-family ipv4 unicast
+  neighbor 10.201.11.10 activate
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  neighbor 10.201.11.10 activate
+ exit-address-family
+```
+
+- `no bgp ebgp-requires-policy` accepts and sends routes without route maps. In production,
+  keep the default and add a route map that accepts only the server's prefixes.
+- `passive` is optional: drop it and set `listen` on ansage if the router should connect.
+- `bgpd` must run (`bgpd=yes` in `/etc/frr/daemons`).
+- Check with `vtysh -c 'show bgp summary'` and `vtysh -c 'show bgp ipv4 unicast 192.0.2.0/24'`.
+
+</Tab>
+<Tab value="BIRD 3">
+
+```txt title="/etc/bird.conf"
+router id 203.0.113.12;
+
+protocol device {}
+
+protocol bgp srv_b {
+    local 10.201.12.2 as 64511;
+    neighbor 10.201.12.10 as 64500;
+    passive on;
+    ipv4 { import all; export all; };
+    ipv6 {
+        import all;
+        export all;
+        # IPv6 routes over an IPv4 session need an IPv6 next hop
+        next hop address 2001:db8:201:12::2;
+    };
+}
+```
+
+- `import all` accepts everything; in production, filter on the server's prefixes.
+- BIRD ignores GRACEFUL_SHUTDOWN without a filter, see [Drain](/docs/guides/drain).
+- To install routes into the kernel, add `protocol kernel` blocks.
+- Check with `birdc show protocols` and `birdc show route 192.0.2.0/24 all`.
+
+</Tab>
+</Tabs>
+
+## On the ansage side
+
+```toml title="/etc/ansage/ansage.toml"
+[[neighbor]]
+address = "10.201.11.2"            # the router
+asn = 64510
+next_hop_ipv6 = "2001:db8:201:11::10"   # our IPv6 address on that link
+```
+
+## Graceful Restart
+
+For [upgrades without dropping routes](/docs/guides/upgrades), the router has to keep ansage's
+routes while ansage restarts. FRR and BIRD both do that by default (FRR: helper mode, BIRD:
+`aware`); ansage's end-to-end test G1 runs against routers without any Graceful Restart lines.
+The lines below make it explicit, or let the router itself restart gracefully:
+
+<Tabs items={["FRR", "BIRD 3"]}>
+<Tab value="FRR">
+
+```txt
+router bgp 64510
+ neighbor 10.201.11.10 graceful-restart
+```
+
+Full Graceful Restart for this neighbor, so FRR can also restart without dropping ansage's routes
+(`bgp graceful-restart` turns it on for every neighbor).
+
+</Tab>
+<Tab value="BIRD 3">
+
+```txt
+protocol bgp srv_b {
+    ...
+    graceful restart on;
+}
+```
+
+Full Graceful Restart instead of the default `aware`.
+
+</Tab>
+</Tabs>
+
+`ansage show peer NEIGHBOR` shows what was negotiated, e.g.
+`Graceful restart: 30 s; peer keeps ours, we keep its for 30 s, N bit`.
+
+## TCP-MD5 and GTSM
+
+If ansage uses `password` / `password_file` or `ttl_security`, the router needs the same:
+
+| | FRR | BIRD |
+|---|---|---|
+| TCP-MD5 | `neighbor 10.201.11.10 password SECRET` | `password "SECRET";` |
+| GTSM | `neighbor 10.201.11.10 ttl-security hops 1` | `ttl security on;` |
+
+Every line on this page runs in ansage's end-to-end tests (`test/e2e/scenarios/negotiation.sh`
+N16, N17, N22 and `graceful.sh` G1, G7, G8). See [Securing sessions](/docs/guides/security).

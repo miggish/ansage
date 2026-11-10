@@ -1,0 +1,108 @@
+---
+title: Run an anycast service
+description: Announce one prefix from several servers, take a site out when its service fails, and drain it for maintenance.
+---
+
+In anycast, several servers announce the same prefix; routers send each client to the nearest one.
+ansage runs on every server and peers with that site's router. This is the setup ansage's
+[end-to-end tests](/docs/development/e2e) run against FRR and BIRD.
+
+```txt
+ clients --- r1 (FRR) ------ r2 (BIRD) --- clients
+              |                  |
+            srv-a              srv-b
+     announces 192.0.2.0/24   announces 192.0.2.0/24
+```
+
+<Steps>
+<Step>
+
+### Put the service address on every server
+
+Every server answers on an address from the anycast prefix, usually on the loopback:
+
+```sh
+ip addr add 192.0.2.1/32 dev lo
+ip addr add 2001:db8:1::1/128 dev lo
+```
+
+Make it permanent with your network config (systemd-networkd, netplan, `/etc/network/interfaces`).
+
+</Step>
+<Step>
+
+### Configure ansage on every server
+
+The same prefixes everywhere; `router_id` differs per server.
+
+```toml title="/etc/ansage/ansage.toml (srv-a)"
+asn = 64500
+router_id = "203.0.113.21"
+announce = ["192.0.2.0/24", "2001:db8:1::/48"]
+graceful_restart = true      # upgrades without dropping routes
+drain_time = 30              # drain 30 s on every stop
+
+[[neighbor]]
+address = "10.201.11.2"
+asn = 64510
+description = "r1"
+next_hop_ipv6 = "2001:db8:201:11::10"   # IPv6 routes over an IPv4 session
+```
+
+`next_hop_ipv6` is needed because this session runs over IPv4, see [Next hops](/docs/guides/next-hops).
+
+</Step>
+<Step>
+
+### Configure the routers
+
+Each router peers with its server(s) and passes the prefix on. See
+[Router configs](/docs/guides/router-config) for FRR and BIRD.
+
+</Step>
+<Step>
+
+### Install and check
+
+```sh
+curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh \
+  | sudo sh -s -- --config ./ansage.toml --operator "$USER"
+ansage show summary
+```
+
+On the router, the prefix now has one path per site.
+
+</Step>
+<Step>
+
+### Add a health check
+
+A server whose service fails must stop announcing. A small loop calls `ansage withdraw` and
+`ansage announce`, see [Health checks](/docs/guides/health-checks).
+
+</Step>
+</Steps>
+
+## Maintenance
+
+Take a site out before working on it, so clients move without a single failed connection:
+
+```sh
+ansage drain --wait 30     # routers move traffic away, the service still answers
+systemctl stop ansage      # or work on the box while drained
+...
+systemctl start ansage     # or ansage undrain
+```
+
+With `drain_time = 30`, `systemctl stop ansage` drains by itself. See [Drain a site](/docs/guides/drain).
+
+## Upgrading ansage itself
+
+With `graceful_restart = true` on ansage and the router, `ansage upgrade` restarts ansage while the
+router keeps forwarding to this site. See [Upgrades](/docs/guides/upgrades).
+
+<Callout type="info" title="One AS for all sites, or one each">
+Both work. With one shared AS, ansage on one site drops the routes for the same prefix that come
+back from another site (its own AS is in the path); with `import = "none"`, the default, it
+stores nothing learned anyway.
+</Callout>

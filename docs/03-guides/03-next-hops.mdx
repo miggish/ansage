@@ -1,0 +1,68 @@
+---
+title: Next hops
+description: Which next hop ansage sends, IPv6 routes over an IPv4 session, and link-local addresses.
+---
+
+Every route ansage announces carries a next hop: the address the router forwards the traffic to.
+By default it is ansage's own address of the session.
+
+| Session over | IPv4 routes | IPv6 routes |
+|---|---|---|
+| IPv4 | our local IPv4 address of the session | **none**: set `next_hop_ipv6` |
+| IPv6 (global address) | **none**: set `next_hop_ipv4` | our local IPv6 address of the session |
+
+## IPv6 routes over an IPv4 session
+
+The most common case: one session over IPv4 that carries both families. Without an IPv6 next
+hop, ansage cannot announce the IPv6 prefixes on it, so set the server's IPv6 address on that
+link:
+
+```toml
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+next_hop_ipv6 = "2001:db8:0:1::10"
+```
+
+Without it, ansage logs once per session
+`no next hop for this family (session runs over the other family; set next_hop_ipv4/next_hop_ipv6), its routes are not announced`,
+and `ansage show summary` shows `0` sent IPv6 prefixes for that neighbor.
+
+The router needs the same for the routes it sends back (BIRD: `next hop address` in the `ipv6`
+channel), see [Router configs](/docs/guides/router-config).
+
+## IPv4 routes over an IPv6 session
+
+The other way round: set `next_hop_ipv4`.
+
+```toml
+[[neighbor]]
+address = "2001:db8:0:1::1"
+asn = 64501
+next_hop_ipv4 = "10.0.0.10"
+```
+
+## Link-local next hops
+
+On a link shared with the neighbor, IPv6 routes may also carry our link-local address next to
+the global one (RFC 2545):
+
+```toml
+[[neighbor]]
+address = "2001:db8:0:1::1"
+asn = 64501
+next_hop_ipv6_link_local = "fe80::10"
+```
+
+`next_hop_ipv6_link_local` must be in `fe80::/10`, and `next_hop_ipv6` must be a global address.
+
+## Rules ansage checks
+
+- A next hop is never the neighbor's own address (RFC 4271); `ansage check` refuses that.
+- `next_hop_ipv6` is global, `next_hop_ipv6_link_local` is link-local.
+
+## Routes ansage learns
+
+With `[kernel]`, the next hops of learned routes matter too: ansage resolves each through the
+kernel's routing table and uses link-local next hops on a shared link. See
+[Kernel routes](/docs/guides/kernel-routes#next-hops).

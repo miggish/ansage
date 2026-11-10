@@ -1,0 +1,67 @@
+---
+title: Drain a site
+description: Move traffic away from a server before maintenance, without a hard withdraw.
+---
+
+Draining (RFC 8326) takes a server out of an anycast set without a hard withdraw: our routes
+go out again with the GRACEFUL_SHUTDOWN community `65535:0`, so routers move traffic to the
+other sites while this one still answers.
+
+```sh
+ansage drain --wait 30 && systemctl stop ansage
+```
+
+This drains for 30 s, then withdraws. `drain_time` does the same on every stop (a second
+SIGTERM ends the wait).
+
+## What changes on the wire
+
+| Session | ansage sends |
+|---|---|
+| iBGP | GRACEFUL_SHUTDOWN, LOCAL_PREF 0 |
+| eBGP | GRACEFUL_SHUTDOWN, plus `drain_prepend` extra prepends of our AS |
+
+## Router side
+
+<Tabs items={["FRR", "BIRD"]}>
+<Tab value="FRR">
+
+FRR lowers routes with `65535:0` to LOCAL_PREF 0 by itself. Nothing to configure.
+
+</Tab>
+<Tab value="BIRD">
+
+BIRD needs a filter, or set `drain_prepend` on the ansage side:
+
+```txt
+if (65535, 0) ~ bgp_community then bgp_local_pref = 0;
+```
+
+</Tab>
+</Tabs>
+
+## Settings
+
+```toml
+drain_time = 30        # on SIGTERM/SIGINT, drain this many seconds before closing (default 0)
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+drain_prepend = 2      # eBGP, for neighbors that ignore GRACEFUL_SHUTDOWN
+```
+
+## Is it drained?
+
+```txt
+$ ansage show summary
+...
+Announcing: 192.0.2.0/24 2001:db8:1::/48
+Drained for 42.0s: our routes carry GRACEFUL_SHUTDOWN (ansage undrain ends it)
+```
+
+The metric `ansage_drained` is 1 while drained; `/api/summary` has the drain start in `drained`.
+
+<Callout type="warn" title="Lifetime of a drain">
+A drain lasts until `ansage undrain`, survives a reload and ends with a restart or upgrade.
+</Callout>

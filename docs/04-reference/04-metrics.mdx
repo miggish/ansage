@@ -1,0 +1,79 @@
+---
+title: Metrics
+description: Every Prometheus metric ansage exports at /metrics, with its labels.
+---
+
+Served at `http://METRICS_LISTEN/metrics` in the Prometheus text format. Per-neighbor metrics
+carry `neighbor` (address:port) and mostly `asn`.
+
+## ansage
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `ansage_info` | gauge | `version`, `asn`, `router_id` | always 1 |
+| `ansage_start_time_seconds` | gauge | | when ansage started, unix time |
+| `ansage_own_prefixes` | gauge | | own prefixes announced to neighbors |
+| `ansage_drained` | gauge | | 1 while drained (`ansage drain`, `drain_time`) |
+| `ansage_rib_up` | gauge | | 1 if the RIB answered this scrape |
+| `ansage_rib_prefixes` | gauge | `family` | prefixes in the RIB |
+| `ansage_rib_attribute_sets` | gauge | | distinct path attribute sets in the RIB |
+
+## Neighbors
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `ansage_peer_info` | gauge | `neighbor`, `asn`, `description` | always 1, one per configured neighbor |
+| `ansage_peer_state` | gauge | `neighbor`, `state` | 1 for the current FSM state (`Idle`, `Active`, `Connect`, `OpenSent`, `OpenConfirm`, `Established`) |
+| `ansage_peer_up` | gauge | `neighbor`, `asn` | 1 while Established |
+| `ansage_peer_disabled` | gauge | `neighbor`, `asn` | 1 while disabled by `ansage peer N disable` |
+| `ansage_peer_state_since_seconds` | gauge | `neighbor`, `asn` | when the current state was entered, unix time |
+| `ansage_peer_graceful_restart_enabled` | gauge | `neighbor`, `asn` | 1 if we offer Graceful Restart (config) |
+| `ansage_peer_graceful_restart_offered` | gauge | `neighbor`, `asn` | 1 if the neighbor offers it in its OPEN |
+| `ansage_peer_graceful_restart` | gauge | `neighbor`, `asn` | 1 if this session negotiated it (both offered) |
+| `ansage_peer_graceful_restart_notification` | gauge | `neighbor`, `asn` | 1 if this session also negotiated the N bit (RFC 8538) |
+| `ansage_peer_prefixes_received` | gauge | `neighbor`, `family` | routes stored from the neighbor (`import = "all"`) |
+| `ansage_peer_prefixes_advertised` | gauge | `neighbor`, `family` | prefixes advertised to the neighbor |
+| `ansage_peer_prefixes_stale` | gauge | `neighbor`, `asn` | routes kept through the neighbor's Graceful Restart, not sent again yet |
+
+## Neighbor counters
+
+All `counter`, labels `neighbor`, `asn`, since ansage started.
+
+| Metric | Counts |
+|---|---|
+| `ansage_peer_established_total` | sessions that reached Established |
+| `ansage_peer_connect_attempts_total` | outgoing connection attempts |
+| `ansage_peer_connect_failures_total` | outgoing connection attempts that failed |
+| `ansage_peer_incoming_accepted_total` | connections from the neighbor used for the session |
+| `ansage_peer_incoming_rejected_total` | connections from the neighbor turned away |
+| `ansage_peer_prefixes_announced_total` | prefixes in UPDATEs sent |
+| `ansage_peer_prefixes_withdrawn_total` | prefixes withdrawn in UPDATEs sent |
+| `ansage_peer_malformed_updates_total` | UPDATEs treated as withdraw (RFC 7606) |
+| `ansage_peer_discarded_attributes_total` | UPDATEs with attributes discarded (RFC 7606) |
+| `ansage_peer_decode_errors_total` | messages that could not be decoded |
+| `ansage_peer_control_drops_total` | control messages dropped on a full queue |
+| `ansage_peer_data_drops_total` | route batches dropped on a full queue |
+
+`ansage_peer_messages_received_total` and `ansage_peer_messages_sent_total` count BGP messages
+with labels `neighbor` and `type` (`open`, `update`, `notification`, `keepalive`, `route_refresh`).
+
+## Kernel routes
+
+Only with `[kernel]`.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `ansage_fib_up` | gauge | | 1 if the FIB answered this scrape |
+| `ansage_fib_routes` | gauge | `family`, `state` | prefixes ansage wants in the kernel: `installed` (per family), `unresolved`, `failed`, `shadowed` (family `all`) |
+| `ansage_fib_adopted_routes` | gauge | | kernel routes of an earlier run not taken over yet |
+| `ansage_fib_next_hops` | gauge | `state` | BGP next hops, `reachable` or `unreachable` through the kernel |
+| `ansage_fib_errors_total` | counter | `reason` | changes the kernel refused, by errno |
+
+## Process
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `process_resident_memory_bytes` | gauge | resident memory |
+| `process_open_fds` | gauge | open file descriptors |
+
+Alert rules built on these are in [Metrics and API](/docs/guides/metrics-api#alerts).

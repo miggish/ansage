@@ -1,0 +1,124 @@
+---
+title: Install
+description: Install ansage as a systemd service with the installer script.
+---
+
+<Tabs items={["Release", "Pinned version", "Local build"]}>
+<Tab value="Release">
+
+```sh
+curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh \
+  | sudo sh -s -- --config ./ansage.toml --operator "$USER"
+```
+
+</Tab>
+<Tab value="Pinned version">
+
+```sh
+curl -fsSL https://github.com/miggish/ansage/releases/latest/download/install.sh \
+  | sudo ANSAGE_VERSION=v0.2.0 sh -s -- --config ./ansage.toml --operator "$USER"
+```
+
+</Tab>
+<Tab value="Local build">
+
+```sh
+sudo ./install.sh --binary target/release/ansage --config ./ansage.toml --operator "$USER"
+```
+
+</Tab>
+</Tabs>
+
+## Installer options
+
+| Option | Meaning |
+|---|---|
+| `--config PATH` | install PATH as `/etc/ansage/ansage.toml`; checked with the new binary first, the old file is kept as `.bak.<time>` |
+| `--operator USER` | add USER to group `ansage`, for `ansage show` etc.; may repeat; takes effect at the next login |
+| `--restart` | if ansage runs and the binary or unit changed, restart it with `ansage upgrade` |
+| `--binary PATH` | install this binary instead of downloading one |
+
+| Environment | Meaning |
+|---|---|
+| `ANSAGE_VERSION` | release tag to install, e.g. `v0.2.0` (default: latest) |
+| `ANSAGE_BASE_URL` | download from here instead of GitHub Releases; must hold `ansage-<arch>-linux-musl`, `ansage.service` and `SHA256SUMS` |
+
+Requirements: root, systemd, curl or wget, x86_64 or aarch64 Linux.
+
+## What the installer does
+
+<Steps>
+<Step>
+
+### Downloads the binary
+
+The static binary for the machine (x86_64 or aarch64), checked against `SHA256SUMS`.
+`ANSAGE_VERSION=v0.2.0` pins a release, `ANSAGE_BASE_URL` downloads from another server and
+`--binary PATH` installs a local build instead.
+
+</Step>
+<Step>
+
+### Creates the user and the files
+
+The system user and group `ansage`, `/usr/local/bin/ansage`, `/etc/ansage` (root:ansage, files
+0640: they may hold TCP-MD5 keys) and `dist/ansage.service`. `--operator USER` adds USER to
+group `ansage`, which may use the control socket (`ansage show`, ...).
+
+</Step>
+<Step>
+
+### Starts the service
+
+It enables the service and starts it once a config exists.
+
+</Step>
+</Steps>
+
+## Running it again
+
+Running the installer again is safe: only changed files are replaced (the old ones are kept as
+`.bak.<time>`), and a new config is checked with the new binary and applied with a reload.
+A running ansage keeps the old binary until `ansage upgrade`, or until you pass `--restart`,
+which runs it for you. See [Upgrades](/docs/guides/upgrades).
+
+## The systemd unit
+
+`dist/ansage.service` runs ansage as user `ansage` with `Type=notify-reload` (readiness and
+reloads are reported to systemd; the installer switches to `Type=notify` before systemd 253)
+and a hardened sandbox. With `[kernel]` in the config, the installer also enables CAP_NET_ADMIN
+and netlink in the unit, see [Kernel routes](/docs/guides/kernel-routes).
+
+## Without the installer
+
+Download `ansage-<arch>-linux-musl`, `ansage.service` and `SHA256SUMS` from a
+[release](https://github.com/miggish/ansage/releases), then:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+install -m 0755 ansage-x86_64-linux-musl /usr/local/bin/ansage
+groupadd --system ansage
+useradd --system --gid ansage --no-create-home --shell /usr/sbin/nologin ansage
+install -d -o root -g ansage -m 0750 /etc/ansage
+install -o root -g ansage -m 0640 ansage.toml /etc/ansage/ansage.toml
+install -m 0644 ansage.service /etc/systemd/system/ansage.service
+systemctl daemon-reload && systemctl enable --now ansage
+```
+
+On systemd older than 253, change `Type=notify-reload` to `Type=notify` and uncomment
+`ExecReload=`. With `[kernel]`, uncomment the three CAP_NET_ADMIN / AF_NETLINK lines. Without systemd, see [Run without systemd](/docs/guides/without-systemd).
+
+## Uninstall
+
+```sh
+systemctl disable --now ansage
+rm /etc/systemd/system/ansage.service /usr/local/bin/ansage
+systemctl daemon-reload
+rm -r /etc/ansage            # the config and keys
+userdel ansage               # also removes group ansage if it is the user's primary group
+```
+
+<Callout type="info">
+Releases come from `.github/workflows/release.yml` on a `vX.Y.Z` tag. `just install-test` runs
+the installer against systemd 252 and 255 in (unprivileged) containers.
+</Callout>

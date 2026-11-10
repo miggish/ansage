@@ -1,0 +1,81 @@
+---
+title: Troubleshooting
+description: A session does not come up, a prefix is not announced, a command cannot reach ansage.
+---
+
+## Where to look
+
+```sh
+ansage show summary              # one line per neighbor: state, since when, prefixes
+ansage show peer 10.0.0.1        # last error, last down, negotiated capabilities, counters
+journalctl -u ansage -f          # the log
+```
+
+More detail in the log: `RUST_LOG=ansage=debug` in the unit's environment
+(`systemctl edit ansage`, then `[Service]` `Environment=RUST_LOG=ansage=debug`).
+`--log-format json` writes one JSON object per line for a log pipeline.
+
+## The session does not come up
+
+`ansage show peer` shows why in `Last error` (our side) or `Last down` (a NOTIFICATION):
+
+```txt
+  State: Idle for 3.0s
+  Last error: 3.0s ago, connect: Connection refused (os error 111)
+  Reconnect: backoff 10.0s, next attempt in 816ms
+```
+
+| Symptom | Likely cause |
+|---|---|
+| `connect: Connection refused` | the router does not listen, or does not know ansage's address as a neighbor |
+| `connect: ... timed out`, state stays `Connect`/`Active` | firewall or routing between ansage and the router; TCP port 179 |
+| `notification received: cease (6/7)` | the router rejected the connection (Connection Rejected): it has no neighbor for ansage's address, or already a session |
+| OPEN error, Bad Peer AS | `asn` on one side does not match `remote-as` / `neighbor ... as` on the other |
+| works without TCP-MD5, fails with it | keys differ, or only one side has one; check `password` / `password_file` |
+| works without `ttl_security`, fails with it | the router does not send TTL 255 or is more hops away than set |
+
+The reconnect delay doubles after every failure up to `max_connect_retry` (default 600 s).
+`ansage peer 10.0.0.1 reset` connects again at once and resets the delay, see [Take one neighbor down](/docs/guides/peer-maintenance).
+
+## The router does not have my prefix
+
+1. `ansage show summary`: is the prefix under `Announcing`? A runtime `ansage withdraw` lasts
+   until a restart.
+2. Is ansage [drained](/docs/guides/drain)? `ansage show summary` says `Drained for ...`; routers
+   prefer other paths then.
+3. Is the `SENT v4/v6` count 0 for one family? The session runs over the other family and ansage
+   has no next hop for it: set `next_hop_ipv6` (or `next_hop_ipv4`), see [Next hops](/docs/guides/next-hops).
+4. Did the router accept it? FRR with `bgp ebgp-requires-policy` (the default) drops routes
+   without a route map; BIRD needs `import` in the matching channel.
+
+## A command cannot reach ansage
+
+```txt
+ansage: cannot connect to /run/ansage/ansage.sock: Permission denied (os error 13) (is ansage running, and is this its control_socket?)
+```
+
+Your user is not in group `ansage`. `sudo usermod -aG ansage "$USER"` (or the installer's
+`--operator`), then log in again.
+
+```txt
+ansage: cannot connect to /run/ansage/ansage.sock: No such file or directory (os error 2) (is ansage running, and is this its control_socket?)
+```
+
+ansage is not running, or uses another `control_socket`: pass `-c /etc/ansage/ansage.toml`
+(ansage reads the socket path from it) or `-s SOCKET`.
+
+## ansage does not start
+
+```sh
+ansage check -c /etc/ansage/ansage.toml
+```
+
+prints what is wrong with the config, e.g. `prefix "10.0.0.1/8": host bits set, did you mean 10.0.0.0/8?`.
+With `[kernel]`, ansage also refuses to start without CAP_NET_ADMIN and says so; the
+installer enables it in the unit when the config has `[kernel]`.
+
+## A reload is refused
+
+`asn`, `router_id`, `listen`, `control_socket` and `metrics_listen` need a restart. A reload that
+changes them, or an invalid file, changes nothing: ansage runs on with the old config.
+See [Reload](/docs/guides/reload).

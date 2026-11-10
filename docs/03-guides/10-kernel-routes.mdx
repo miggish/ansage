@@ -1,0 +1,58 @@
+---
+title: Kernel routes
+description: Install the best routes learned from neighbors into the Linux routing table.
+---
+
+With a `[kernel]` section, the best route of every prefix learned from a neighbor with
+`import = "all"` goes into the kernel's routing table (protocol `bgp`,
+`ip route show proto bgp`). Linux 5.3 or newer.
+
+```toml
+[kernel]
+table = 254            # main (default)
+metric = 20            # FRR's for eBGP (default)
+families = ["ipv4", "ipv6"]
+resolve_via_default = false
+
+[[neighbor]]
+address = "10.0.0.1"
+asn = 64501
+import = "all"
+install = true         # default with [kernel]; false keeps this neighbor's routes out
+```
+
+## Next hops
+
+Each BGP next hop is one kernel nexthop object (ids from 3120562176 = 0xBA000000,
+`ip nexthop show`), so a next hop that moves is one change, not one per route.
+
+- A next hop is resolved through the kernel's own route to it: connected, or through that
+  route's gateway (iBGP, multihop; for an ECMP route or a nexthop group, its first leg that is
+  up). Routes learned by BGP and the default route do not count (`resolve_via_default = true`
+  allows the latter).
+- An IPv6 link-local next hop (RFC 2545) from a neighbor on a shared link goes out of the
+  session's interface: used when the neighbor sends only a link-local next hop, and when its
+  global one does not resolve.
+- ansage watches interfaces, addresses and routes: when a next hop becomes unreachable its
+  routes leave the kernel at once and the next best path takes over; what the kernel refuses
+  is tried again every 30 s.
+- Our own prefixes (`announce`, also after a runtime withdraw) never go in.
+
+## Inspecting
+
+`ansage show fib` lists the counts and every next hop (reachable through which gateway and
+interface, or not); `ansage show rib ADDRESS` shows the longest matching prefix and whether it
+is in the kernel. Metrics: `ansage_fib_routes`, `ansage_fib_next_hops`,
+`ansage_fib_errors_total`, `ansage_fib_adopted_routes`.
+
+## Permissions and lifecycle
+
+<Callout type="warn" title="CAP_NET_ADMIN">
+ansage needs CAP_NET_ADMIN and netlink: the installer enables them in the unit when the config
+has `[kernel]`; otherwise ansage refuses to start and says what is missing.
+</Callout>
+
+A stop removes ansage's routes. `ansage upgrade` and a crash leave them: the next start keeps
+them forwarding, replaces each as its neighbor sends it again, and removes the rest once every
+installing neighbor has sent End-of-RIB (at most 6 minutes). A reload moves the routes to a
+new `table` or `metric` without a gap; adding or removing `[kernel]` needs a restart.

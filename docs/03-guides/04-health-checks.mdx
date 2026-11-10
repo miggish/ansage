@@ -1,0 +1,120 @@
+---
+title: Health checks
+description: Withdraw a prefix when the service behind it fails, announce it again when it is back.
+---
+
+Health checks live outside ansage: a script or timer that calls `ansage withdraw` when the
+service fails and `ansage announce` when it is back, with its own rise/fall counts against
+flapping.
+
+```sh
+ansage withdraw 192.0.2.0/24    # the service failed
+ansage announce 192.0.2.0/24    # it is back
+```
+
+A runtime withdraw or announce lasts until ansage restarts. A [reload](/docs/guides/reload)
+keeps it: own prefixes follow the difference between the old and the new file, so a prefix
+withdrawn at runtime stays withdrawn.
+
+<Callout type="info" title="Withdraw or drain?">
+A withdraw takes the prefix away at once. To move traffic away while the service still
+answers (maintenance), [drain](/docs/guides/drain) instead.
+</Callout>
+
+## A complete health check
+
+This loop checks an HTTP endpoint every 2 seconds, withdraws after 2 failures and announces
+again after 3 successes. Keep the prefix in `announce` in the config, so ansage announces it
+on start; the loop sets the wanted state every round, which also covers an ansage restart
+while the service is down.
+
+<Steps>
+<Step>
+
+### The script
+
+```sh title="/usr/local/bin/ansage-health"
+#!/bin/sh
+# usage: ansage-health PREFIX URL
+set -u
+prefix=$1 url=$2
+rise=3 fall=2 interval=2
+healthy=true good=0 bad=0
+
+while :; do
+    if curl -fsS -m 1 -o /dev/null "$url"; then
+        good=$((good + 1)) bad=0
+    else
+        bad=$((bad + 1)) good=0
+    fi
+    if $healthy && [ "$bad" -ge "$fall" ]; then
+        healthy=false
+        logger -t ansage-health "$url failed $fall times, withdrawing $prefix"
+    elif ! $healthy && [ "$good" -ge "$rise" ]; then
+        healthy=true
+        logger -t ansage-health "$url is back, announcing $prefix"
+    fi
+    if $healthy; then
+        ansage announce "$prefix" >/dev/null
+    else
+        ansage withdraw "$prefix" >/dev/null
+    fi
+    sleep "$interval"
+done
+```
+
+`ansage announce` and `ansage withdraw` are idempotent, so calling them every round is safe.
+
+</Step>
+<Step>
+
+### The unit
+
+```ini title="/etc/systemd/system/ansage-health-web.service"
+[Unit]
+Description=ansage health check for the web service
+After=ansage.service
+BindsTo=ansage.service
+
+[Service]
+ExecStart=/usr/local/bin/ansage-health 192.0.2.0/24 http://127.0.0.1/healthz
+DynamicUser=yes
+# group ansage may use the control socket
+SupplementaryGroups=ansage
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=ansage.service
+```
+
+```sh
+chmod 0755 /usr/local/bin/ansage-health
+systemctl daemon-reload
+systemctl enable --now ansage-health-web.service
+journalctl -t ansage-health -f
+```
+
+</Step>
+<Step>
+
+### Try it
+
+```sh
+systemctl stop nginx          # or whatever serves /healthz
+ansage show summary           # after ~4 s: 192.0.2.0/24 is gone from "Announcing"
+systemctl start nginx         # after ~6 s it is back
+```
+
+</Step>
+</Steps>
+
+## Several prefixes or services
+
+Run one unit per service (`ansage-health-web`, `ansage-health-dns`) with its own prefix,
+or pass several prefixes to one `ansage withdraw` call: `ansage withdraw 192.0.2.0/24 2001:db8:1::/48`.
+
+## With metrics
+
+`ansage_own_prefixes` drops when a health check withdraws. To alert on it, see
+[Metrics and API](/docs/guides/metrics-api#alerts).

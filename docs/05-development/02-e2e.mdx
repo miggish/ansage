@@ -1,0 +1,54 @@
+---
+title: End-to-end tests
+description: ansage against real FRR and BIRD routers in containers, with real traffic.
+---
+
+`test/e2e/` holds a container network in which ansage announces anycast prefixes to real
+routers (FRR and BIRD), and test users send real traffic (HTTP, ping, traceroute) through them.
+Scenarios assert on traffic and paths, on the routers' view and on ansage's own view (its
+control socket).
+
+```txt
+ user1 --[u1]-- r1 (FRR) ----[core]---- r2 (BIRD) --[u2]-- user2
+                 |              |              |
+                [a]           srv-c           [b]
+                 |                             |
+               srv-a                         srv-b
+```
+
+## Requirements
+
+Docker with Compose, `just`, the Rust musl target
+(`rustup target add x86_64-unknown-linux-musl`).
+
+<Callout type="warn" title="No podman">
+podman is refused: it puts a macvlan network without a parent on the host's LAN interface. All
+networks are internal macvlan networks on a Docker dummy link, so nothing reaches the host's LAN.
+</Callout>
+
+## Running
+
+```sh
+just e2e-up          # build ansage + the rogue peer, start the copies
+just e2e             # default tier
+just e2e-full        # everything (~5.5 min on 4 copies)
+just e2e F4 R        # single scenarios or groups
+test/e2e/run.sh -l   # list the scenarios
+just e2e-sh r1       # shell in a container (copy 1)
+just e2e-down
+```
+
+`E2E_JOBS` (default 4) sets how many identical copies of the network run side by side; the
+scenarios are spread over them. `E2E_JOBS=1 test/e2e/run.sh ...` uses copy 1 only and prints
+every scenario's output. Results, logs and state dumps of failed scenarios go to
+`test/e2e/out/<run>/`.
+
+## CI
+
+Every pull request runs the default tier on GitHub Actions (`.github/workflows/e2e.yml`,
+results as the `e2e-results` artifact); a manual run of the workflow can choose the full tier
+or single scenarios.
+
+M11 replays a fuzz corpus, which is not in git. Build it once with
+`just fuzz decode -max_total_time=120 -max_len=4200` (cargo-fuzz on nightly); without it M11 is
+skipped.

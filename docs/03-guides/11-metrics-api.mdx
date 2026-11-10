@@ -1,0 +1,92 @@
+---
+title: Metrics and API
+description: Scrape ansage with Prometheus, alert on sessions and drains, and feed a dashboard.
+---
+
+```toml
+metrics_listen = "127.0.0.1:9179"
+```
+
+| Path | What |
+|---|---|
+| `/metrics` | Prometheus metrics, see [Metrics](/docs/reference/metrics) |
+| `/api/summary` | the same as `ansage show summary --json` |
+| `/api/peers` | all peers, or one with `?peer=` |
+| `/api/rib` | `?prefix=`, or `?family=ipv4&limit=N` |
+| `/api/fib` | kernel routes and next hops |
+| `/api/events` | Server-Sent Events: `summary` at once and every 5 s, `peer` on every session change |
+
+The JSON is the same as `ansage show ... --json`; details in the [HTTP API](/docs/reference/http-api).
+
+<Callout type="warn" title="Trusted hosts only">
+The API includes session details and routes, so bind it to an address only trusted hosts
+reach. Changing `metrics_listen` needs a restart.
+</Callout>
+
+## Scrape with Prometheus
+
+```yaml title="prometheus.yml"
+scrape_configs:
+  - job_name: ansage
+    static_configs:
+      - targets: ["srv-a.example.net:9179", "srv-b.example.net:9179"]
+```
+
+For a Prometheus on another host, bind `metrics_listen` to an address on your management
+network (e.g. `"10.255.0.21:9179"`), not `0.0.0.0`.
+
+## Alerts
+
+```yaml title="ansage.rules.yml"
+groups:
+  - name: ansage
+    rules:
+      - alert: AnsageSessionDown
+        expr: ansage_peer_up == 0 and ansage_peer_disabled == 0
+        for: 2m
+        annotations:
+          summary: "{{ $labels.instance }}: BGP session to {{ $labels.neighbor }} is down"
+
+      - alert: AnsageNotAnnouncing
+        expr: ansage_peer_up == 1 and on (instance, neighbor) sum by (instance, neighbor) (ansage_peer_prefixes_advertised) == 0
+        for: 5m
+        annotations:
+          summary: "{{ $labels.instance }} announces nothing to {{ $labels.neighbor }}"
+
+      - alert: AnsageDrainedTooLong
+        expr: ansage_drained == 1
+        for: 2h
+        annotations:
+          summary: "{{ $labels.instance }} has been drained for 2 hours (ansage undrain?)"
+
+      - alert: AnsageKernelErrors
+        expr: increase(ansage_fib_errors_total[10m]) > 0
+        annotations:
+          summary: "{{ $labels.instance }}: the kernel refused route changes ({{ $labels.reason }})"
+
+      - alert: AnsageDown
+        expr: up{job="ansage"} == 0
+        for: 1m
+```
+
+`AnsageNotAnnouncing` catches a session that is up but carries none of our prefixes: a
+runtime `ansage withdraw` by a [health check](/docs/guides/health-checks), or a missing
+[next hop](/docs/guides/next-hops). Drop it if your health checks withdraw on purpose.
+
+## Useful queries
+
+| Question | PromQL |
+|---|---|
+| Sessions up per server | `sum by (instance) (ansage_peer_up)` |
+| Flapping sessions | `increase(ansage_peer_established_total[1h]) > 3` |
+| How long in the current state | `time() - ansage_peer_state_since_seconds` |
+| Routes learned | `sum by (instance, family) (ansage_peer_prefixes_received)` |
+| Graceful Restart negotiated where configured | `ansage_peer_graceful_restart_enabled - ansage_peer_graceful_restart` (1 = the neighbor does not do it) |
+
+## Quick checks with curl
+
+```sh
+curl -s localhost:9179/metrics | grep '^ansage_peer_up'
+curl -s localhost:9179/api/summary | jq '.peers[] | {address, state}'
+curl -N localhost:9179/api/events        # live, Ctrl-C to stop
+```

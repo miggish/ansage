@@ -1,0 +1,45 @@
+---
+title: Take one neighbor down
+description: Disable, enable or reset a single BGP session, e.g. while its router is being worked on.
+---
+
+`ansage peer` acts on one neighbor and leaves the others alone. The neighbor is named by its ID
+(the first column of `ansage show summary`), its address, or `address:port`.
+
+```sh
+ansage peer 10.0.0.1 disable --reason "r1 maintenance, ticket 4711"
+ansage peer 10.0.0.1 enable
+ansage peer 10.0.0.1 reset
+```
+
+| Command | NOTIFICATION sent | Afterwards |
+|---|---|---|
+| `disable [--reason TEXT]` | Cease / Administrative Shutdown, with TEXT (RFC 9003) | stays down until `enable` |
+| `enable` | - | connects again |
+| `reset` | Cease / Administrative Reset | reconnects |
+
+The reason is shown on the router, for example in FRR's `show bgp neighbor` as the shutdown
+message, and in ansage's own `ansage show peer`:
+
+```txt
+  Last down: 60.0s ago, administrative: cease (6/9) "maintenance"
+```
+
+<Callout type="info" title="6/9 instead of 6/2?">
+With Graceful Restart and the N bit (RFC 8538) negotiated, ansage wraps the Cease in a Hard Reset
+(6/9), so the neighbor withdraws our routes at once instead of keeping them as stale.
+</Callout>
+
+## Lifetime
+
+A disabled neighbor stays disabled across a [reload](/docs/guides/reload) and enabled again by a
+restart. `ansage_peer_disabled` is 1 while it is disabled.
+
+## Disable vs. drain vs. remove
+
+| Goal | Use |
+|---|---|
+| Move traffic off this whole server, sessions stay up | [`ansage drain`](/docs/guides/drain) |
+| Close one session for a while | `ansage peer N disable` |
+| Get rid of a neighbor | delete its `[[neighbor]]` and `ansage reload` (Cease / Peer De-configured) |
+| Re-establish a stuck session | `ansage peer N reset` |
