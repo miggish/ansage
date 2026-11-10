@@ -5,10 +5,10 @@
 	"type": "module",
 	"scripts": {
 		"dev": "bun src/serve.ts --dev",
-		"build": "bun src/build.tsx",
+		"build": "bun scripts/extract-config.mjs && bun src/build.tsx",
 		"start": "bun src/serve.ts",
 		"check:md": "bun scripts/check-md.mjs",
-		"types:check": "tsc --noEmit",
+		"types:check": "bun scripts/extract-config.mjs && tsc --noEmit",
 		"lint": "biome check",
 		"format": "biome check --write"
 	},

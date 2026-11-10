@@ -1,6 +1,8 @@
 // Builds the site into dist/: every docs page as HTML and as Markdown, the home page,
 // llms.txt and llms-full.txt, the stylesheet (Tailwind), site.js and the search index
-// (Pagefind). `bun run build`; `bun run dev` runs it again on every change.
+// (Pagefind). `bun run build`; `bun run dev` runs it again on every change. Both write
+// src/lib/generated/config-schema.json first (scripts/extract-config.mjs): this file imports it,
+// and imports load before any code here runs.
 import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ReactElement } from "react";
@@ -52,7 +54,6 @@ if (missing.length) {
 	);
 }
 
-await run(["bun", "scripts/extract-config.mjs"]);
 rmSync(dist, { recursive: true, force: true });
 
 // docs: HTML at /docs/x/index.html, Markdown at /docs/x.md

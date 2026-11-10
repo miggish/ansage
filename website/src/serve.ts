@@ -24,6 +24,12 @@ async function build() {
 		return building;
 	}
 	building = (async () => {
+		const extract = Bun.spawn(["bun", "scripts/extract-config.mjs"], {
+			cwd: root,
+			stdout: "inherit",
+			stderr: "inherit",
+		});
+		if ((await extract.exited) !== 0) return;
 		const proc = Bun.spawn(["bun", "src/build.tsx"], {
 			cwd: root,
 			env: { ...Bun.env, ANSAGE_DEV: "1" },
