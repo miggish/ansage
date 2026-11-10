@@ -410,3 +410,12 @@ dialog#search::backdrop {
 	background-color: color-mix(in oklch, var(--color-ok) 15%, transparent);
 	color: var(--color-fg);
 }
+
+/* code blocks: the copy button shows a check mark for a moment after copying */
+.code-copy .copied-icon,
+.code-copy[data-copied] .copy-icon {
+	display: none;
+}
+.code-copy[data-copied] .copied-icon {
+	display: block;
+}

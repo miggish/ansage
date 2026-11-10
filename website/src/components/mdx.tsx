@@ -1,17 +1,25 @@
 // The MDX components of the docs, rendered to HTML at build time. Every one of them needs a
 // Markdown form in src/markdown.ts too (checked by the build).
-import { ArrowRight, Copy, Info, TriangleAlert } from "lucide-react";
+import { ArrowRight, Check, Copy, Info, TriangleAlert } from "lucide-react";
 import type { MDXComponents } from "mdx/types";
 import { Children, type ComponentProps, type ReactNode, useId } from "react";
 import { ConfigReference } from "@/components/config-reference";
 import { cn } from "@/lib/cn";
 
-/** A code block from Shiki, with its title (```toml title="…") and a copy button. */
+const shellLanguages = ["sh", "bash", "shell", "console"];
+
+/** A code block from Shiki, with its title (```toml title="…") and a copy button: always
+ * visible on shell commands, on hover (or a touch screen) elsewhere. */
 function Pre({
 	"data-title": title,
+	"data-language": language,
 	className,
 	...props
-}: ComponentProps<"pre"> & { "data-title"?: string }) {
+}: ComponentProps<"pre"> & {
+	"data-title"?: string;
+	"data-language"?: string;
+}) {
+	const shell = shellLanguages.includes(language ?? "");
 	return (
 		<figure className="not-prose my-6 border bg-surface">
 			{title && (
@@ -30,10 +38,15 @@ function Pre({
 				<button
 					type="button"
 					data-copy-code
-					aria-label="Copy the code"
-					className="absolute top-2.5 right-2.5 border bg-bg p-1.5 text-fg-muted opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100"
+					aria-label={shell ? "Copy the commands" : "Copy the code"}
+					className={cn(
+						"code-copy absolute top-2.5 right-2.5 border bg-bg p-1.5 text-fg-muted transition-opacity hover:text-fg focus-visible:opacity-100",
+						!shell &&
+							"opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100",
+					)}
 				>
-					<Copy className="size-3.5" />
+					<Copy className="copy-icon size-3.5" />
+					<Check className="copied-icon size-3.5 text-ok" />
 				</button>
 			</div>
 		</figure>

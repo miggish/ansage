@@ -39,6 +39,13 @@ function rehypeHeadings(toc: TocItem[]) {
 	};
 }
 
+/** The language on the <pre> (data-language), for the copy button. */
+const languageTransformer = {
+	pre(this: { options: { lang: string } }, node: Element) {
+		node.properties["data-language"] = this.options.lang;
+	},
+};
+
 /** ```toml title="/etc/ansage/ansage.toml" -> data-title on the <pre> */
 function parseMetaString(meta: string) {
 	const title = /title="([^"]*)"/.exec(meta)?.[1];
@@ -59,6 +66,7 @@ export async function compilePage(body: string) {
 					defaultLanguage: "txt",
 					fallbackLanguage: "txt",
 					parseMetaString,
+					transformers: [languageTransformer],
 				},
 			],
 			rehypeHeadings(toc),

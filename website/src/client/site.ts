@@ -22,6 +22,14 @@ function toggleTheme() {
 	}
 }
 
+/** A block that shows `$ command` lines with their output copies just the commands. */
+function commands(code: string): string {
+	const lines = code.split("\n");
+	const prompts = lines.filter((line) => line.startsWith("$ "));
+	if (prompts.length === 0) return code;
+	return prompts.map((line) => line.slice(2)).join("\n");
+}
+
 async function copy(button: HTMLElement, text: string) {
 	await navigator.clipboard.writeText(text);
 	button.dataset.copied = "";
@@ -81,7 +89,7 @@ document.addEventListener("click", (event) => {
 	if ("copyText" in button.dataset) copy(button, button.dataset.copyText ?? "");
 	if ("copyCode" in button.dataset) {
 		const code = button.parentElement?.querySelector("pre")?.textContent ?? "";
-		copy(button, code);
+		copy(button, commands(code));
 	}
 	if (button.dataset.copyUrl) {
 		fetch(button.dataset.copyUrl)
