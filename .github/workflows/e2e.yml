@@ -1,10 +1,12 @@
-# End-to-end tests (test/e2e) on every pull request: ansage against FRR and
-# BIRD in containers, with real traffic. Manual runs can pick the full tier
-# or single scenarios.
+# End-to-end tests (test/e2e) on every pull request and push to main: ansage
+# against FRR and BIRD in containers, with real traffic. Manual runs can pick
+# the full tier or single scenarios.
 name: e2e
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tier:

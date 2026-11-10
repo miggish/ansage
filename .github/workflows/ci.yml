@@ -1,0 +1,44 @@
+# Format, lint and unit tests on every pull request and push to main. The
+# release workflow runs the tests again before it builds.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # rustfmt.toml uses nightly options (imports_granularity, wrap_comments).
+      - name: Toolchain
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: cargo +nightly fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - run: cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --workspace --locked
