@@ -74,8 +74,7 @@ function Banner() {
 					New
 				</span>
 				<span className="hidden sm:inline">
-					ansage {release.version} is out: drain, graceful upgrades, kernel
-					routes
+					ansage {release.version} is out: {release.highlights}
 				</span>
 				<span className="sm:hidden">ansage {release.version} is out</span>
 				<ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
