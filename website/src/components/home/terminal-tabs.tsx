@@ -12,7 +12,7 @@ interface Tab {
 	link: { text: string; href: string };
 }
 
-// Real output of ansage 0.2.0 (two local instances peering over loopback), and the
+// Real output of ansage 0.4.0 (two local instances peering over loopback), and the
 // result of the end-to-end tests G1 and G8 (test/e2e/scenarios/graceful.sh).
 const tabs: Tab[] = [
 	{
@@ -21,14 +21,14 @@ const tabs: Tab[] = [
 		subtitle: "ansage show · one eBGP neighbor",
 		lines: [
 			["cmd", "ansage show summary"],
-			["out", "ansage 0.2.0, AS 64500, router ID 203.0.113.1, up 19.0s"],
+			["out", "ansage 0.4.0, AS 64500, router ID 203.0.113.1, up 19.0s"],
 			["out", "RIB: 1 IPv4 and 1 IPv6 prefixes, 1 attribute sets"],
 			["hi", "Announcing: 192.0.2.0/24 2001:db8:1::/48"],
 			["out", ""],
 			["dim", "ID  NEIGHBOR         AS     STATE        FOR    SENT v4/v6"],
 			["hi", "1   127.0.0.2:11790  64501  Established  12.8s  1/1"],
 		],
-		note: "Output of ansage 0.2.0, columns shortened. Every client command also takes --json.",
+		note: "Output of ansage 0.4.0, columns shortened. Every client command also takes --json.",
 		link: {
 			text: "first session",
 			href: "/docs/getting-started/first-session",
@@ -45,7 +45,7 @@ const tabs: Tab[] = [
 				"Drained: our routes go out with GRACEFUL_SHUTDOWN 65535:0 until `ansage undrain`",
 			],
 			["cmd", "ansage show summary"],
-			["out", "ansage 0.2.0, AS 64500, router ID 203.0.113.1, up 20.0s"],
+			["out", "ansage 0.4.0, AS 64500, router ID 203.0.113.1, up 20.0s"],
 			["out", "Announcing: 192.0.2.0/24 2001:db8:1::/48"],
 			[
 				"hi",
@@ -67,7 +67,7 @@ const tabs: Tab[] = [
 				"out",
 				"  127.0.0.2:11790   keeps our routes for 30 s (Cease without Hard Reset)",
 			],
-			["out", "New binary: ansage 0.2.0, config OK"],
+			["out", "New binary: ansage 0.4.0, config OK"],
 			["out", "Restarting; waiting up to 30 s for 1 neighbors"],
 			["hi", "ansage is back after 0.3 s"],
 			["hi", "  127.0.0.2:11790   back after 0.3 s"],
