@@ -1023,8 +1023,8 @@ fn next_hops_through_an_ecmp_kernel_route() {
         oif,
         gateway: Some(a(gateway)),
     };
-    // `ip route add 172.16.0.0/16 nexthop via 10.0.0.8 dev 2 nexthop via 10.1.0.8
-    // dev 3`, the first leg without carrier.
+    // `ip route add 172.16.0.0/16 nexthop via 10.0.0.8 dev 2 nexthop via
+    // 10.1.0.8 dev 3`, the first leg without carrier.
     fib.kernel().table.push(Route {
         oif: None,
         multipath: vec![

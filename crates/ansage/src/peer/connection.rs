@@ -116,7 +116,8 @@ impl Connection {
     /// NOTIFICATION) and closes the connection (see [`finish`]). Queued
     /// routes are dropped. The handle completes within the flush timeout.
     pub(super) fn close(self) -> JoinHandle<()> {
-        // The writer is gone only if a write failed; then nothing is left to do.
+        // The writer is gone only if a write failed; then nothing is left to
+        // do.
         let _ = self.closing.send(self.reader);
         drop(self.control);
         drop(self.data);

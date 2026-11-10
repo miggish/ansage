@@ -53,7 +53,8 @@ impl Socket {
             socket.setsockopt(SOL_NETLINK, opt, &1i32)?;
         }
         socket.set_timeout(DEFAULT_TIMEOUT)?;
-        // SAFETY: sockaddr_nl is plain data; all zero = kernel assigns the port.
+        // SAFETY: sockaddr_nl is plain data; all zero = kernel assigns the
+        // port.
         let mut addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
         addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
         // SAFETY: addr is a valid sockaddr_nl of the given length.

@@ -80,7 +80,8 @@ fn write_sockaddr(storage: &mut libc::sockaddr_storage, addr: IpAddr) {
     let storage = storage as *mut libc::sockaddr_storage;
     match addr {
         IpAddr::V4(a) => {
-            // SAFETY: sockaddr_storage is large and aligned enough for any sockaddr.
+            // SAFETY: sockaddr_storage is large and aligned enough for any
+            // sockaddr.
             let sin = unsafe { &mut *storage.cast::<libc::sockaddr_in>() };
             sin.sin_family = libc::AF_INET as libc::sa_family_t;
             sin.sin_addr.s_addr = u32::from_ne_bytes(a.octets());

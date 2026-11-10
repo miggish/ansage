@@ -703,7 +703,8 @@ fn in_namespace() {
         "{ip}"
     );
 
-    // The dump is filtered in the kernel: 203.0.113.0/24 (proto boot) is not there.
+    // The dump is filtered in the kernel: 203.0.113.0/24 (proto boot) is not
+    // there.
     let routes = k.routes(AF_INET);
     assert_eq!(routes.len(), 1, "{routes:?}");
     assert_eq!(routes[0].dst, r4.dst);

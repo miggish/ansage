@@ -99,7 +99,8 @@ impl Address {
                 _ => {}
             }
         }
-        // On point-to-point links IFA_ADDRESS is the far end; ours is IFA_LOCAL.
+        // On point-to-point links IFA_ADDRESS is the far end; ours is
+        // IFA_LOCAL.
         let addr = local.or(address).ok_or(DecodeError::Missing {
             kind,
             attr: IFA_ADDRESS,

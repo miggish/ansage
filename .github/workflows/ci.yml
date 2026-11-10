@@ -20,10 +20,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      # rustfmt.toml uses nightly options (imports_granularity, wrap_comments).
+      # rustfmt.toml uses nightly options (imports_granularity, wrap_comments). Pinned: a newer
+      # nightly may format differently (wrap_comments did); format with the same version locally.
       - name: Toolchain
-        run: rustup toolchain install nightly --profile minimal --component rustfmt
-      - run: cargo +nightly fmt --all --check
+        run: rustup toolchain install nightly-2026-11-09 --profile minimal --component rustfmt
+      - run: cargo +nightly-2026-11-09 fmt --all --check
 
   clippy:
     runs-on: ubuntu-24.04

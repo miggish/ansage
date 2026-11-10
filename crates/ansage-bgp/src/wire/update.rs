@@ -102,7 +102,8 @@ impl Update {
                 }
             }
         }
-        // NEXT_HOP is only needed for routes outside MP_REACH_NLRI (RFC 4760 §3).
+        // NEXT_HOP is only needed for routes outside MP_REACH_NLRI (RFC 4760
+        // §3).
         if !nlri.is_empty() && !attrs.has(type_code::NEXT_HOP) {
             let err = DecodeError::MissingWellKnownAttribute(type_code::NEXT_HOP);
             attrs.note_withdraw(Some(type_code::NEXT_HOP), err);
