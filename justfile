@@ -7,6 +7,23 @@ build:
 watch:
     cargo watch -cx run
 
+# --- formatting: rustfmt (nightly, pinned like .github/workflows/ci.yml) and Biome ---
+
+rustfmt_nightly := "nightly-2026-11-09"
+
+fmt:
+    cargo +{{rustfmt_nightly}} fmt --all
+    cd website && bun run format
+
+# What CI checks; the pre-push hook runs it.
+fmt-check:
+    cargo +{{rustfmt_nightly}} fmt --all --check
+    cd website && bun run lint
+
+# Turns on the hooks in .githooks for this clone.
+hooks:
+    git config core.hooksPath .githooks
+
 # --- Lab: BIRD 3 in Docker, host network, listening on 127.0.0.2:179 ---
 
 lab-up:

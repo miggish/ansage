@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuses the push when the code is not formatted the way CI checks it (`just fmt-check`).
+# `just fmt` fixes it; `git push --no-verify` skips the check. Turn on with `just hooks`.
+if ! just fmt-check >/dev/null 2>&1; then
+	just fmt-check
+	echo >&2
+	echo "pre-push: not formatted, run \`just fmt\` and commit" >&2
+	exit 1
+fi
